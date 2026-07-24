@@ -825,6 +825,196 @@ class AutoVacuum:
 - **GitHub**: README с бейджами и release notes
 - **Документация**: MkDocs или аналог
 
+### 3.20 Streams with Consumer Groups (из sqredis_ARCH.md)
+
+Расширенные streams с consumer groups для балансировки нагрузки.
+
+```sql
+CREATE TABLE IF NOT EXISTS streams (
+    name TEXT PRIMARY KEY,
+    maxlen INTEGER NOT NULL DEFAULT 10000,
+    ttl_seconds INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS stream_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stream_name TEXT NOT NULL REFERENCES streams(name),
+    data TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS consumer_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stream_name TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    last_delivered_id INTEGER NOT NULL DEFAULT 0,
+    pending_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(stream_name, group_name)
+);
+
+CREATE TABLE IF NOT EXISTS consumer_group_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL REFERENCES consumer_groups(id),
+    consumer_name TEXT NOT NULL,
+    last_acked_id INTEGER NOT NULL DEFAULT 0,
+    pending_ids TEXT NOT NULL DEFAULT '[]',
+    last_seen TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(group_id, consumer_name)
+);
+```
+
+**Операции:**
+- `XADD(stream, data)` — добавить запись
+- `XREAD(stream, from_id, count)` — чтение с позиции
+- `XREADGROUP(group, consumer, count)` — чтение с балансировкой
+- `XACK(group, consumer, entry_id)` — подтверждение
+- `XTRIM(stream, maxlen)` — усечение
+- `XDEL(stream, entry_id)` — удаление одной записи
+
+### 3.21 Saga with SQL Savepoints (из sqredis_ARCH.md)
+
+Саги с настоящим откатом через SQLite savepoints.
+
+```sql
+CREATE TABLE IF NOT EXISTS sagas (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS saga_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    saga_id TEXT NOT NULL REFERENCES sagas(id),
+    step_order INTEGER NOT NULL,
+    step_type TEXT NOT NULL,
+    step_data TEXT NOT NULL,
+    compensating_data TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error_message TEXT,
+    UNIQUE(saga_id, step_order)
+);
+```
+
+**Схема работы:**
+```sql
+BEGIN;
+    INSERT INTO kv_store ...;      -- Шаг 1
+    INSERT INTO stream_entries ...; -- Шаг 2
+    INSERT INTO pubsub_messages ...; -- Шаг 3
+COMMIT;
+-- Если COMMIT не удался — всё откатилось на уровне SQLite
+-- Если бизнес-логика упала ПОСЛЕ COMMITа — запуск компенсации
+```
+
+### 3.22 Extended Middleware (из sqredis_ARCH.md)
+
+6 встроенных middleware (у нас 5, добавляем Validate и Metrics):
+
+| Middleware | Назначение | Конфиг |
+|---|---|---|
+| RateLimit | N событий за окно | RateLimit(count, window_seconds) |
+| Dedup | Дедупликация по хешу | Dedup(hash_fields, window_seconds) |
+| Transform | Обогащение (timestamp, source) | Transform(enrichers...) |
+| Logging | Аудит | Logging(output, level) |
+| **Validate** | **Валидация схемы** | **Validate(json_schema)** |
+| **Metrics** | **Сбор метрик** | **Metrics(prometheus_registry)** |
+
+### 3.23 REST API Spec (из sqredis_ARCH.md)
+
+```
+GET    /kv/:key              — GET
+POST   /kv/:key              — SET (body: value, ttl?)
+DELETE /kv/:key              — DEL
+POST   /kv/batch             — MSET
+GET    /kv/batch?keys=...    — MGET
+
+POST   /pubsub/publish       — Publish { channel, payload }
+POST   /pubsub/subscribe     — Subscribe { channel, callback_url }
+DELETE /pubsub/subscribe/:id — Unsubscribe
+
+POST   /stream/:name/add     — XADD
+GET    /stream/:name/read    — XREAD (since_id, count)
+POST   /stream/:name/group   — Create consumer group
+
+POST   /saga/begin           — Begin saga
+POST   /saga/:id/step        — Add step
+POST   /saga/:id/execute     — Execute
+POST   /saga/:id/compensate  — Compensate
+GET    /saga/:id             — Status
+
+GET    /health               — Health check
+GET    /stats                — Статистика
+```
+
+### 3.24 MCP Integration (из sqredis_ARCH.md)
+
+Тулы для интеграции с AI-агентами:
+
+```python
+# MCP tools
+sqredis_set(key, value, ttl=None)       # SET
+sqredis_get(key)                        # GET
+sqredis_del(key)                        # DEL
+sqredis_keys(pattern)                   # LIKE-поиск
+
+sqredis_publish(channel, payload)       # PUBLISH
+sqredis_subscribe(channel)              # SUBSCRIBE
+
+sqredis_stream_add(stream, data)        # XADD
+sqredis_stream_read(stream, from_id)    # XREAD
+
+sqredis_saga_begin()                    # BEGIN SAGA
+sqredis_saga_step(saga_id, type, data)  # ADD STEP
+sqredis_saga_execute(saga_id)           # EXECUTE
+```
+
+### 3.25 TTL Daemon (из sqredis_ARCH.md)
+
+Фоновая горутина для очистки истёкших данных:
+
+```python
+# purr/ttl_daemon.py
+class TTLDaemon:
+    def __init__(self, store: Store, interval: float = 60.0):
+        self._store = store
+        self._interval = interval
+        self._running = False
+    
+    async def start(self) -> None:
+        """Start background cleanup."""
+        self._running = True
+        while self._running:
+            await self._cleanup()
+            await asyncio.sleep(self._interval)
+    
+    async def _cleanup(self) -> int:
+        """Delete expired keys."""
+        conn = self._store._get_conn()
+        cursor = conn.execute(
+            "DELETE FROM kv_meta WHERE expires_at < ?",
+            (datetime.now(timezone.utc).isoformat(),)
+        )
+        return cursor.rowcount
+    
+    def stop(self) -> None:
+        self._running = False
+```
+
+### 3.26 Limitations (из sqredis_ARCH.md)
+
+Честная оценка ограничений:
+
+| Ограничение | Описание | Решение |
+|---|---|---|
+| **Не для распределённых систем** | PURR живёт на одной машине | Кластер в будущем |
+| **WAL растёт** | Нужна периодическая checkpoint | Auto-VACUUM |
+| **Не in-memory** | Для high-frequency кэшей Redis быстрее | LRU cache layer |
+| **SQLite single writer** | Конкурентная запись — узкое место | Write queue |
+
 ---
 
 ## 4. Architecture Evolution
