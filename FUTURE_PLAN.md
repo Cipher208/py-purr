@@ -1015,6 +1015,420 @@ class TTLDaemon:
 | **Не in-memory** | Для high-frequency кэшей Redis быстрее | LRU cache layer |
 | **SQLite single writer** | Конкурентная запись — узкое место | Write queue |
 
+### 3.27 Three-Layer Architecture (из PURR_SPEC.md)
+
+Три слоя реактивности, надевающиеся друг на друга:
+
+```
+Layer 3: Stream (Windowed Aggregation)
+  ↓ использует
+Layer 2: EventBus (pub/sub + middleware)
+  ↓ использует
+Layer 1: Core (SSoT + Delta)
+```
+
+**Принципы:**
+1. **Zero-dep core** — базовая стейт-машина без внешних зависимостей
+2. **Layered, not coupled** — EventBus использует Core, но Core ничего не знает об EventBus
+3. **Deterministic replay** — все изменения состояния = события, лог воспроизводит состояние
+4. **Fail-fast validation** — дельта с невалидным полем = ошибка, не тихий дроп
+
+### 3.28 Field Registration (из PURR_SPEC.md)
+
+Регистрация полей с типами и валидаторами:
+
+```python
+# purr/field_registry.py
+class FieldOptions:
+    default_value: Any = None
+    min_value: float | None = None
+    max_value: float | None = None
+    validator: Callable[[Any], bool] | None = None
+    persistent: bool = True
+
+class FieldRegistry:
+    def __init__(self):
+        self._fields: dict[str, FieldOptions] = {}
+    
+    def register(self, name: str, options: FieldOptions) -> None:
+        """Register a field with type and validator."""
+        self._fields[name] = options
+    
+    def validate(self, name: str, value: Any) -> bool:
+        """Validate value against field options."""
+        if name not in self._fields:
+            raise ValueError(f"Unknown field: {name}")
+        
+        opts = self._fields[name]
+        if opts.min_value is not None and value < opts.min_value:
+            return False
+        if opts.max_value is not None and value > opts.max_value:
+            return False
+        if opts.validator and not opts.validator(value):
+            return False
+        return True
+```
+
+### 3.29 Wildcard Trie (из PURR_SPEC.md)
+
+Topic matching с wildcard'ами:
+
+```
+"state.energy"        — точное совпадение
+"state.*"             — одноуровневый wildcard
+"state.**"            — многоуровневый
+"#"                   — catch-all
+```
+
+```python
+# purr/topic_trie.py
+class TopicTrie:
+    def __init__(self):
+        self._root = TrieNode()
+    
+    def insert(self, topic: str, handler: Callable) -> None:
+        """Insert a topic pattern."""
+        node = self._root
+        for part in topic.split("."):
+            if part == "#":
+                node.catch_all = handler
+                return
+            if part not in node.children:
+                node.children[part] = TrieNode()
+            node = node.children[part]
+        node.handlers.append(handler)
+    
+    def match(self, topic: str) -> list[Callable]:
+        """Find all matching handlers for a topic."""
+        results = []
+        node = self._root
+        parts = topic.split(".")
+        
+        for i, part in enumerate(parts):
+            if "#" in node.children:
+                results.extend(node.children["#"].handlers)
+            if "*" in node.children:
+                results.extend(node.children["*"].handlers)
+            if part in node.children:
+                node = node.children[part]
+            else:
+                break
+        else:
+            results.extend(node.handlers)
+        
+        return results
+```
+
+### 3.30 Outbox Pattern (из PURR_SPEC.md)
+
+События пишутся в outbox перед отправкой подписчикам:
+
+```python
+# purr/outbox.py
+class Outbox:
+    def __init__(self, db_path: str | Path):
+        self._db_path = db_path
+        self._init_db()
+    
+    def _init_db(self):
+        conn = self._get_conn()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                delivered_at TEXT
+            );
+        """)
+    
+    def enqueue(self, topic: str, payload: Any) -> int:
+        """Write event to outbox."""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            "INSERT INTO outbox (topic, payload, created_at) VALUES (?, ?, ?)",
+            (topic, json.dumps(payload), datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
+        return cursor.lastrowid
+    
+    def mark_delivered(self, event_id: int) -> None:
+        """Mark event as delivered."""
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE outbox SET delivered_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), event_id)
+        )
+        conn.commit()
+    
+    def get_pending(self, limit: int = 100) -> list[dict]:
+        """Get undelivered events."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM outbox WHERE status = 'pending' LIMIT ?",
+            (limit,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+```
+
+### 3.31 Dead Letter Queue (из PURR_SPEC.md)
+
+События, не доставленные после N retry:
+
+```python
+# purr/dlq.py
+class DeadLetterQueue:
+    def __init__(self, db_path: str | Path, max_retries: int = 3):
+        self._db_path = db_path
+        self._max_retries = max_retries
+        self._init_db()
+    
+    def _init_db(self):
+        conn = self._get_conn()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS dead_letters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                error TEXT NOT NULL,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                last_retry_at TEXT
+            );
+        """)
+    
+    def add(self, topic: str, payload: Any, error: str) -> None:
+        """Add event to DLQ."""
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO dead_letters (topic, payload, error, created_at) VALUES (?, ?, ?, ?)",
+            (topic, json.dumps(payload), error, datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
+    
+    def retry(self, event_id: int) -> dict | None:
+        """Retry an event. Returns None if max retries exceeded."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM dead_letters WHERE id = ?", (event_id,)
+        ).fetchone()
+        
+        if not row:
+            return None
+        
+        if row["retry_count"] >= self._max_retries:
+            return None
+        
+        conn.execute(
+            "UPDATE dead_letters SET retry_count = retry_count + 1, last_retry_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), event_id)
+        )
+        conn.commit()
+        
+        return dict(row)
+```
+
+### 3.32 Stream Windows (из PURR_SPEC.md)
+
+Оконная агрегация событий:
+
+```python
+# purr/windows.py
+from enum import Enum
+from typing import Callable
+
+class WindowType(Enum):
+    TUMBLING = "tumbling"    # фиксированный размер, без перекрытия
+    SLIDING = "sliding"      # фиксированный размер, с перекрытием
+    SESSION = "session"      # по зазору бездействия
+
+class WindowSpec:
+    topic: str
+    type: WindowType
+    size: int  # seconds
+    slide: int = 0  # seconds (for sliding)
+    gap: int = 0  # seconds (for session)
+    aggregate: Callable | None = None
+    max_lateness: int = 0  # seconds
+
+class StreamWindow:
+    def __init__(self, spec: WindowSpec):
+        self._spec = spec
+        self._events: list[dict] = []
+        self._max_timestamp: float = 0
+    
+    def push(self, event: dict) -> None:
+        """Add event to window."""
+        self._events.append(event)
+        ts = event.get("timestamp", time.time())
+        if ts > self._max_timestamp:
+            self._max_timestamp = ts
+    
+    def get_result(self) -> dict:
+        """Get aggregated result."""
+        if self._spec.aggregate:
+            return self._spec.aggregate(self._events)
+        return {"count": len(self._events)}
+    
+    def is_closed(self) -> bool:
+        """Check if window should be closed."""
+        now = time.time()
+        if self._spec.type == WindowType.TUMBLING:
+            return now - self._events[0].get("timestamp", 0) >= self._spec.size
+        return False
+```
+
+### 3.33 Built-in Aggregations (из PURR_SPEC.md)
+
+```python
+# purr/aggregations.py
+def aggregate_count(events: list) -> dict:
+    return {"count": len(events)}
+
+def aggregate_sum(field: str) -> Callable:
+    def agg(events: list) -> dict:
+        total = sum(e.get(field, 0) for e in events)
+        return {"sum": total}
+    return agg
+
+def aggregate_avg(field: str) -> Callable:
+    def agg(events: list) -> dict:
+        values = [e.get(field, 0) for e in events]
+        avg = sum(values) / len(values) if values else 0
+        return {"avg": avg}
+    return agg
+
+def aggregate_min_max(field: str) -> Callable:
+    def agg(events: list) -> dict:
+        values = [e.get(field, 0) for e in events]
+        return {"min": min(values), "max": max(values)} if values else {"min": 0, "max": 0}
+    return agg
+
+def aggregate_histogram(field: str, bins: list[float]) -> Callable:
+    def agg(events: list) -> dict:
+        values = [e.get(field, 0) for e in events]
+        hist = [0] * (len(bins) + 1)
+        for v in values:
+            for i, b in enumerate(bins):
+                if v < b:
+                    hist[i] += 1
+                    break
+            else:
+                hist[-1] += 1
+        return {"histogram": hist, "bins": bins}
+    return agg
+
+def aggregate_topk(field: str, k: int) -> Callable:
+    def agg(events: list) -> dict:
+        values = [e.get(field, 0) for e in events]
+        sorted_vals = sorted(values, reverse=True)[:k]
+        return {"topk": sorted_vals}
+    return agg
+```
+
+### 3.34 Metrics Export (из PURR_SPEC.md)
+
+```python
+# purr/metrics_export.py
+class MetricsExporter:
+    def counter(self, name: str, value: int, labels: dict = None) -> None: ...
+    def gauge(self, name: float, value: float, labels: dict = None) -> None: ...
+    def histogram(self, name: str, value: float, labels: dict = None) -> None: ...
+
+class PrometheusExporter(MetricsExporter):
+    def __init__(self):
+        self._counters: dict[str, int] = {}
+        self._gauges: dict[str, float] = {}
+        self._histograms: dict[str, list[float]] = {}
+    
+    def counter(self, name, value, labels=None):
+        key = f"{name}_{labels}" if labels else name
+        self._counters[key] = self._counters.get(key, 0) + value
+    
+    def gauge(self, name, value, labels=None):
+        key = f"{name}_{labels}" if labels else name
+        self._gauges[key] = value
+    
+    def histogram(self, name, value, labels=None):
+        key = f"{name}_{labels}" if labels else name
+        if key not in self._histograms:
+            self._histograms[key] = []
+        self._histograms[key].append(value)
+    
+    def export(self) -> str:
+        """Export metrics in Prometheus format."""
+        lines = []
+        for k, v in self._counters.items():
+            lines.append(f"purr_{k} {v}")
+        for k, v in self._gauges.items():
+            lines.append(f"purr_{k} {v}")
+        for k, values in self._histograms.items():
+            lines.append(f"purr_{k}_count {len(values)}")
+            lines.append(f"purr_{k}_sum {sum(values)}")
+        return "\n".join(lines)
+```
+
+### 3.35 Graceful Shutdown (из PURR_SPEC.md)
+
+```python
+# purr/shutdown.py
+import asyncio
+
+async def graceful_shutdown(stream=None, bus=None, core=None, timeout: float = 30.0):
+    """Shut down components in order: Stream → Bus → Core."""
+    ctx = asyncio.wait_for(asyncio.sleep(timeout), timeout=timeout)
+    
+    if stream:
+        await stream.close()
+    if bus:
+        await bus.close(ctx)
+    if core:
+        core.close()
+```
+
+### 3.36 Deterministic Replay (из PURR_SPEC.md)
+
+```python
+# purr/replay.py
+class ReplayEngine:
+    def __init__(self, core):
+        self._core = core
+        self._log: list[dict] = []
+    
+    def record(self, delta: dict, source: str) -> None:
+        """Record delta for replay."""
+        self._log.append({
+            "delta": delta,
+            "source": source,
+            "timestamp": time.time(),
+        })
+    
+    def replay(self) -> None:
+        """Replay all recorded deltas."""
+        for entry in self._log:
+            self._core.apply_delta(entry["delta"], entry["source"])
+    
+    def save_log(self, path: str) -> None:
+        """Save replay log to file."""
+        with open(path, "w") as f:
+            json.dump(self._log, f)
+    
+    def load_log(self, path: str) -> None:
+        """Load replay log from file."""
+        with open(path, "r") as f:
+            self._log = json.load(f)
+```
+
+### 3.37 Testing Strategy (из PURR_SPEC.md)
+
+Ключевые тесты:
+
+1. **Replay test** — записать лог, пересоздать Core, применить лог → финальное состояние идентично
+2. **Crash recovery test** — убить процесс, перезапустить → состояние из последнего снепшота
+3. **Concurrency test** — 100 потоков одновременно ApplyDelta → ни одной гонки
+4. **Backpressure test** — EventBus с медленным подписчиком → буфер не переполняется
+
 ---
 
 ## 4. Architecture Evolution
