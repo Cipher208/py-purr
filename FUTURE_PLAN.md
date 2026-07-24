@@ -42,6 +42,8 @@
 | **Sets** | SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SUNION, SINTER | P0 |
 | **Sorted Sets** | ZADD, ZREM, ZRANGE, ZSCORE, ZRANK, ZCARD | P1 |
 | **Streams** | XADD, XREAD, XRANGE, XLEN, XINFO | ✅ Done (EventStream) |
+| **FTS5** | Full-text search across keys and values | P1 |
+| **Key Versioning** | Point-in-time recovery, version history | P1 |
 
 #### Hashes Implementation
 ```python
@@ -314,6 +316,7 @@ class PubSub:
 | **Client Library** | Python client для удалённого доступа | P1 |
 | **Docker** | Docker image | P1 |
 | **Benchmarking** | Performance tests | P2 |
+| **Metrics** | Reads/sec, TTL hits, DB size tracking | P1 |
 | **Documentation** | Полная документация API | P0 |
 
 #### CLI
@@ -350,7 +353,354 @@ db0:keys=42,expires=10,avg_ttl=3600
 
 ---
 
-## 3. Architecture Evolution
+## 3. Advanced Ideas (from redis.md)
+
+Дополнительные идеи для развития PURR beyond basic Redis compatibility.
+
+### 3.1 Key Versioning (Point-in-Time Recovery)
+
+Каждая SET пишет новую версию в историю. GET без параметров — последняя. GET с `?version=N` — конкретная.
+
+```python
+# purr/versioned_store.py
+class VersionedStore(Store):
+    def set(self, key: str, value: Any, ttl: float | None = None) -> bool:
+        """Set with automatic versioning."""
+        # Store current version
+        version = self._get_next_version(key)
+        self._store_version(key, version, value)
+        # Store as current
+        return super().set(key, value, ttl)
+    
+    def get(self, key: str, version: int | None = None) -> Any | None:
+        """Get by key, optionally at specific version."""
+        if version is None:
+            return super().get(key)
+        return self._get_version(key, version)
+    
+    def history(self, key: str, limit: int = 10) -> list[dict]:
+        """Get version history for a key."""
+        # Returns [{version, value, timestamp}, ...]
+    
+    def restore(self, key: str, version: int) -> bool:
+        """Restore key to specific version."""
+```
+
+**Преимущества над Redis:** Point-in-time recovery из коробки. Ни один Redis так не умеет.
+
+### 3.2 Lazy TTL (ленивая экспирация)
+
+Не сканировать всю базу каждую секунду — чистить при GET/SET.
+
+```python
+# purr/lazy_ttl.py
+class LazyTTL:
+    def on_access(self, key: str) -> bool:
+        """Check TTL on access. Returns True if expired."""
+        meta = self._get_meta(key)
+        if meta and meta.expires_at:
+            if datetime.now(timezone.utc) > meta.expires_at:
+                self._delete(key)
+                return True
+        return False
+    
+    def cleanup(self, batch_size: int = 100) -> int:
+        """Background cleanup of expired keys."""
+        # SELECT key FROM kv_meta WHERE expires_at < NOW() LIMIT batch_size
+        # DELETE FROM kv WHERE key IN (...)
+        # Return count deleted
+```
+
+### 3.3 Write Queue (конкурентная запись)
+
+SQLite не терпит конкурентной записи. Нужна очередь.
+
+```python
+# purr/write_queue.py
+class WriteQueue:
+    def __init__(self, store: Store, max_queue: int = 1000):
+        self._store = store
+        self._queue = asyncio.Queue(maxsize=max_queue)
+        self._worker_task = None
+    
+    async def start(self):
+        """Start background worker."""
+        self._worker_task = asyncio.create_task(self._process_queue())
+    
+    async def enqueue(self, operation: Callable) -> None:
+        """Queue a write operation."""
+        await self._queue.put(operation)
+    
+    async def _process_queue(self):
+        """Process writes sequentially."""
+        while True:
+            op = await self._queue.get()
+            await op()
+            self._queue.task_done()
+```
+
+### 3.4 FTS5 (полнотекстовый поиск)
+
+SQLite FTS5 для индексации ключей и значений.
+
+```python
+# purr/fts.py
+class FTSIndex:
+    def __init__(self, db_path: str | Path):
+        self._db_path = db_path
+        self._init_fts()
+    
+    def _init_fts(self):
+        """Create FTS5 virtual table."""
+        # CREATE VIRTUAL TABLE IF NOT EXISTS kv_fts USING fts5(key, value)
+    
+    def index(self, key: str, value: str) -> None:
+        """Index a key-value pair."""
+        # INSERT INTO kv_fts VALUES (key, value)
+    
+    def search(self, query: str, limit: int = 10) -> list[str]:
+        """Full-text search across keys and values."""
+        # SELECT key FROM kv_fts WHERE kv_fts MATCH ? LIMIT ?
+    
+    def remove(self, key: str) -> None:
+        """Remove from index."""
+        # DELETE FROM kv_fts WHERE key = ?
+```
+
+### 3.5 Hybrid Pub/Sub
+
+In-process очередь для локальных подписчиков + SQLite events для внешних.
+
+```python
+# purr/hybrid_pubsub.py
+class HybridPubSub:
+    def __init__(self, stream: EventStream):
+        self._stream = stream
+        self._local_subscribers: dict[str, list[Callable]] = {}
+    
+    async def subscribe(self, channel: str, callback: Callable, external: bool = False):
+        """Subscribe to channel."""
+        if external:
+            # External: use EventStream with cursor
+            pass
+        else:
+            # Local: in-process queue
+            if channel not in self._local_subscribers:
+                self._local_subscribers[channel] = []
+            self._local_subscribers[channel].append(callback)
+    
+    async def publish(self, channel: str, message: Any) -> int:
+        """Publish to channel."""
+        # 1. Write to EventStream (for external consumers)
+        event = Event(type=EventType.STORE, topic=f"pubsub:{channel}", payload={"message": message})
+        self._stream.append(event)
+        
+        # 2. Notify local subscribers
+        for callback in self._local_subscribers.get(channel, []):
+            await callback(message)
+        
+        return len(self._local_subscribers.get(channel, []))
+```
+
+### 3.6 Replication (WAL Log Shipping)
+
+Мастер шлёт WAL-логи, слейвы применяют диффы.
+
+```python
+# purr/replication.py
+class ReplicationManager:
+    def __init__(self, store: Store):
+        self._store = store
+        self._replicas: list[ReplicaConnection] = []
+    
+    async def add_replica(self, host: str, port: int) -> None:
+        """Add a replica to replicate to."""
+    
+    async def sync(self) -> None:
+        """Send WAL changes to replicas."""
+        # 1. Read WAL checkpoint
+        # 2. Send diff to each replica
+        # 3. Wait for acknowledgment
+    
+    async def catchup(self, replica: ReplicaConnection) -> None:
+        """Full sync for new replica."""
+```
+
+### 3.7 Sharding (hash-based partitioning)
+
+Каждая партиция в отдельном SQLite-файле.
+
+```python
+# purr/sharded_store.py
+class ShardedStore:
+    def __init__(self, base_path: str | Path, num_shards: int = 4):
+        self._shards = [
+            Store(base_path / f"shard_{i}.db")
+            for i in range(num_shards)
+        ]
+        self._num_shards = num_shards
+    
+    def _get_shard(self, key: str) -> Store:
+        """Get shard for key using consistent hashing."""
+        shard_id = hash(key) % self._num_shards
+        return self._shards[shard_id]
+    
+    def set(self, key: str, value: Any, **kwargs) -> bool:
+        return self._get_shard(key).set(key, value, **kwargs)
+    
+    def get(self, key: str) -> Any | None:
+        return self._get_shard(key).get(key)
+```
+
+### 3.8 In-Memory LRU Cache
+
+SQLite для persistence, LRU слой для скорости.
+
+```python
+# purr/cache.py
+from collections import OrderedDict
+
+class LRUCache:
+    def __init__(self, max_size: int = 1000):
+        self._cache: OrderedDict[str, Any] = OrderedDict()
+        self._max_size = max_size
+    
+    def get(self, key: str) -> Any | None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        return None
+    
+    def set(self, key: str, value: Any) -> None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        self._cache[key] = value
+        if len(self._cache) > self._max_size:
+            self._cache.popitem(last=False)
+
+class CachedStore:
+    def __init__(self, store: Store, cache_size: int = 1000):
+        self._store = store
+        self._cache = LRUCache(cache_size)
+    
+    def get(self, key: str) -> Any | None:
+        # Try cache first
+        value = self._cache.get(key)
+        if value is not None:
+            return value
+        # Fall through to store
+        value = self._store.get(key)
+        if value is not None:
+            self._cache.set(key, value)
+        return value
+```
+
+### 3.9 ARCHIVE Command
+
+WAL checkpoint + compress + versioned backup.
+
+```python
+# purr/archive.py
+class Archiver:
+    def __init__(self, store: Store, archive_dir: str | Path):
+        self._store = store
+        self._archive_dir = Path(archive_dir)
+        self._archive_dir.mkdir(parents=True, exist_ok=True)
+    
+    def archive(self, name: str | None = None) -> Path:
+        """Create a versioned archive."""
+        # 1. WAL checkpoint
+        conn = self._store._get_conn()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        
+        # 2. Copy DB
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive_name = name or f"archive_{timestamp}"
+        archive_path = self._archive_dir / f"{archive_name}.db"
+        shutil.copy2(self._store._db_path, archive_path)
+        
+        # 3. Compress (optional)
+        # gzip archive_path
+        
+        return archive_path
+    
+    def restore(self, archive_path: str | Path) -> bool:
+        """Restore from archive."""
+        shutil.copy2(archive_path, self._store._db_path)
+        return True
+    
+    def list_archives(self) -> list[dict]:
+        """List available archives."""
+        archives = []
+        for f in self._archive_dir.glob("*.db*"):
+            archives.append({
+                "name": f.stem,
+                "path": str(f),
+                "size": f.stat().st_size,
+                "created": datetime.fromtimestamp(f.stat().st_ctime),
+            })
+        return sorted(archives, key=lambda x: x["created"], reverse=True)
+```
+
+### 3.10 Metrics
+
+```python
+# purr/metrics.py
+class Metrics:
+    def __init__(self):
+        self._counters: dict[str, int] = {}
+        self._histograms: dict[str, list[float]] = {}
+    
+    def increment(self, name: str, value: int = 1) -> None:
+        self._counters[name] = self._counters.get(name, 0) + value
+    
+    def observe(self, name: str, value: float) -> None:
+        if name not in self._histograms:
+            self._histograms[name] = []
+        self._histograms[name].append(value)
+    
+    def get_counter(self, name: str) -> int:
+        return self._counters.get(name, 0)
+    
+    def get_histogram(self, name: str) -> dict:
+        values = self._histograms.get(name, [])
+        if not values:
+            return {"count": 0, "min": 0, "max": 0, "avg": 0}
+        return {
+            "count": len(values),
+            "min": min(values),
+            "max": max(values),
+            "avg": sum(values) / len(values),
+        }
+    
+    def get_all(self) -> dict:
+        return {
+            "counters": self._counters.copy(),
+            "histograms": {k: self.get_histogram(k) for k in self._histograms},
+        }
+```
+
+### 3.11 Embedded Use Case
+
+PURR как embedded хранилище для mobile/embedded систем.
+
+**Преимущества:**
+- Single file (.db)
+- No daemons
+- No ports
+- Python-native
+- Thread-safe
+- Persistent by default
+
+**Use cases:**
+- Mobile app local storage
+- IoT device data
+- Desktop app configuration
+- Embedded Python applications
+
+---
+
+## 4. Architecture Evolution
 
 ### Current (v0.1.0)
 ```
