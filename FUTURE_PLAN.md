@@ -1429,6 +1429,35 @@ class ReplayEngine:
 3. **Concurrency test** — 100 потоков одновременно ApplyDelta → ни одной гонки
 4. **Backpressure test** — EventBus с медленным подписчиком → буфер не переполняется
 
+### 3.38 Missing Items from Cross-Check
+
+Дополнения после сверки 4 документов.
+
+#### From sqredis_ARCH.md:
+- **MSET/MGET** — атомарная multi-key запись/чтение (Phase 1)
+- **EXISTS** — проверка существования ключа (Phase 1)
+- **PubSub subscriber_type + callback_url** — webhook delivery (Phase 3)
+- **Persistent pubsub_messages table** — три таблицы для PubSub (Phase 3)
+
+#### From PURR_SPEC.md:
+- **Core API methods** — SubscribeRaw, AddEvent, Close (Phase 1)
+- **Config functional options** — WithInitialState, WithMaxLastEvents, etc. (Phase 1)
+- **InteractionCount** — счётчик взаимодействий в Snapshot (Phase 1)
+- **Fail-fast validation** — принцип "ошибка, не тихий дроп" (Phase 1)
+- **Named metrics** — 9 конкретных имён (Phase 5):
+  - `purr_state_fields`, `purr_delta_total`, `purr_delta_errors_total`
+  - `purr_eventbus_published_total`, `purr_eventbus_delivered_total`, `purr_eventbus_dropped_total`
+  - `purr_stream_windows_active`, `purr_stream_events_windowed_total`
+  - `purr_persist_duration_seconds`
+- **Exporters** — OpenTelemetry, Log-based (Phase 5)
+- **Use cases** — Game Dev, Edge/Serverless, DevTools, Education (Use Cases)
+- **EmitTrigger types** — EmitOnClose, EmitOnInterval, EmitOnThreshold (Phase 3)
+- **Watermark algorithm** — maxTimestamp - maxLateness (Phase 3)
+- **Code of Conduct** — safe space (Launch)
+- **Star goals** — 50/100/500 stars (Launch)
+- **Repository structure** — Go-targeted tree (Architecture)
+- **Integration test layout** — replay_test.go, persistence_test.go, bench_test.go (Phase 6)
+
 ---
 
 ## 4. Architecture Evolution
