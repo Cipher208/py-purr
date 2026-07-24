@@ -698,6 +698,133 @@ PURR как embedded хранилище для mobile/embedded систем.
 - Desktop app configuration
 - Embedded Python applications
 
+### 3.12 Dual Mode (StateMachine + KV)
+
+Один пакет — два режима работы (из statebus-spec.md):
+
+```python
+from purr import Store, StateMachine
+
+# KV mode
+kv = Store("cache.db")
+kv.set("user:123:prefs", {"theme": "dark"})
+kv.lpush("queue:jobs", "job1")
+kv.incr("counter:visits")
+
+# StateMachine mode
+sm = StateMachine("agent", db_path="state.db")
+sm.apply_delta({"energy": -0.1}, "module")
+snap = sm.get_snapshot()
+
+# Both in one process
+# (share same DB or separate files)
+```
+
+### 3.13 Python SDK
+
+Чистый API для两种 режимов:
+
+```python
+# purr/client.py
+class PurrClient:
+    """Unified client for StateMachine and KV modes."""
+    
+    def __init__(self, db_path: str | Path, mode: str = "kv"):
+        if mode == "state":
+            self._backend = StateMachine("default", db_path)
+        else:
+            self._backend = Store(db_path)
+    
+    # KV operations
+    def set(self, key: str, value: Any, **kwargs) -> bool: ...
+    def get(self, key: str) -> Any | None: ...
+    def delete(self, key: str) -> bool: ...
+    
+    # StateMachine operations
+    def apply_delta(self, data: dict, module: str) -> None: ...
+    def get_snapshot(self) -> dict: ...
+```
+
+### 3.14 CLI Tools
+
+```
+purr serve --port 6379          # Redis-совместимый протокол (RESP)
+purr serve --http --port 8080   # HTTP API
+purr inspect data/purr.db       # Показать содержимое
+purr stats data/purr.db         # Статистика: чтений/записей, размер WAL
+purr dump data/purr.db          # Дамп в JSON
+purr vacuum data/purr.db        # VACUUM + восстановление размера
+```
+
+### 3.15 Auto-VACUUM
+
+SQLite без VACUUM растёт. Автоматический VACUUM при превышении порога:
+
+```python
+# purr/vacuum.py
+class AutoVacuum:
+    def __init__(self, store: Store, threshold: float = 0.5):
+        self._store = store
+        self._threshold = threshold  # 50% dead data
+    
+    def check_and_vacuum(self) -> bool:
+        """Check if VACUUM needed, run if so."""
+        conn = self._store._get_conn()
+        
+        # Check page count vs freelist
+        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+        freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]
+        
+        if freelist / page_count > self._threshold:
+            conn.execute("VACUUM")
+            return True
+        return False
+```
+
+### 3.16 Positioning
+
+**Месседж первой строки:**
+
+> **PURR — SQLite, который отвечает как Redis. Одна библиотека — три модуля: Store, StateMachine, EventBus.**
+
+**УТП:**
+1. Zero dependency — `pip install purr` и готово
+2. Три модуля в одном пакете — KV + FSM + Events
+3. SQLite WAL — данные не теряются
+4. EventBus middleware — RateLimit, Dedup, Transform из коробки
+5. Atomic write — temp file + rename, ни одного битого файла
+
+**Кому нужно:**
+- Разработчикам агентов — внутреннее состояние (настроение, энергия)
+- Backend-разработчикам — замена Redis для маленьких проектов
+- Хобби-проектам на VPS — каждая зависимость считается
+- Dev-средам — не хочется поднимать Redis для тестов
+
+### 3.17 Competitive Analysis
+
+| Решение | StateMachine | KV Store | EventBus | SQLite |
+|---------|:---:|:---:|:---:|:---:|
+| **PURR** | ✅ | ✅ | ✅ | ✅ |
+| `redis` | ❌ | ✅ (родной) | ❌ | ❌ |
+| `sqlite-redis` | ❌ | Partial | ❌ | ✅ |
+| `pickle + файл` | ⚠️ самописно | ❌ | ❌ | ❌ |
+
+**PURR — единственный, кто даёт и StateMachine, и KV, и EventBus — на чистом SQLite, без сервера.**
+
+### 3.18 Key Decisions (из spec)
+
+- **WAL обязателен**: `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`
+- **Sync API — фича**: для маленьких операций асинхронность — оверхед
+- **VACUUM автоматический**: при превышении порога (50% dead data)
+- **RESP не обязательно в v1**: начать с HTTP + Python SDK
+
+### 3.19 Launch Strategy
+
+- **PyPI**: `pip install purr`
+- **Hacker News**: "I replaced Redis with a SQLite file — here's the library"
+- **GitHub**: README с бейджами и release notes
+- **Документация**: MkDocs или аналог
+
 ---
 
 ## 4. Architecture Evolution
