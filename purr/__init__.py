@@ -8,9 +8,15 @@ A lightweight, thread-safe key-value store with:
 - Sagas for multi-step transactions
 - Middleware pipeline
 - Event bus for pub/sub
+- Event stream with cursors (Redis Streams-like)
+- Health monitoring
+- Event schema versioning
+- Retry with exponential backoff
 """
 
 from .event import Event, EventBus, EventType
+from .event_stream import EventStream
+from .health import HealthChecker, HealthStatus
 from .middleware import (
     DedupMiddleware,
     FilterMiddleware,
@@ -24,6 +30,7 @@ from .retry import RetryConfig, RetryHandler
 from .saga import Saga, SagaStatus
 from .state_machine import State, StateMachine, Transition
 from .store import Store
+from .versioning import EventVersioner
 
 __version__ = "0.1.0"
 
@@ -37,6 +44,10 @@ __all__ = [
     "EventBus",
     "Event",
     "EventType",
+    "EventStream",
+    "EventVersioner",
+    "HealthChecker",
+    "HealthStatus",
     "Middleware",
     "MiddlewarePipeline",
     "LoggingMiddleware",
