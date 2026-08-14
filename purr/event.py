@@ -30,6 +30,9 @@ class Event(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     correlation_id: str | None = None
+    version: int = 1
+    source: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 EventHandler = Callable[[Event], Coroutine[Any, Any, None]]
