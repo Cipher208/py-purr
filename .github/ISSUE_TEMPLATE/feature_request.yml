@@ -1,0 +1,16 @@
+name: Feature Request
+description: Suggest an idea or enhancement for PURR
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: feature
+    attributes:
+      label: Proposed Feature
+      placeholder: Describe the problem this solves and how it should work.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      placeholder: Any alternative solutions or workarounds you've considered.

@@ -1,0 +1,31 @@
+name: Bug Report
+description: File a bug report for PURR
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting an issue with PURR!
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      placeholder: A clear description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      placeholder: Minimal code snippet or reproduction steps.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        - OS: [e.g. Linux/macOS/Windows]
+        - Python version: [e.g. 3.11.8]
+        - PURR version: [e.g. 0.1.0]
+    validations:
+      required: true
