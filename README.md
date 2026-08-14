@@ -1,91 +1,164 @@
-# PURR
+# 🐾 PURR
 
-> Redis-like on SQLite — state machine, sagas, middleware, WAL.
+**The Zero-Infrastructure SQLite-backed alternative to Redis.**
 
-## Features
+*State Machine, Sagas, Event Streams, and Key-Value Store with SQLite WAL persistence.*
 
-- **Store** — thread-safe key-value store with SQLite WAL
-- **State Machine** — FSM with persistence, snapshots, guards, actions
-- **Saga** — compensating transactions for multi-step operations
-- **Middleware** — event processing pipeline (logging, rate limiting, dedup, filter, transform)
-- **Event Bus** — pub/sub for decoupled communication
-- **Retry** — exponential backoff with jitter
+[![CI](https://github.com/Cipher208/PURR/actions/workflows/ci.yml/badge.svg)](https://github.com/Cipher208/PURR/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Quick Start
+---
+
+## 💡 Why PURR?
+
+Modern applications and autonomous AI agents need reliable state management, event streaming, and transactional guarantees. Typically, this forces you to deploy and manage a heavy infrastructure stack: **Redis, Redis Streams, Celery, and RabbitMQ**.
+
+**PURR replaces that complexity with a single embedded SQLite database file.**
+
+- 🪶 **Zero Infrastructure:** Pure Python. No Docker containers, no external services, no background daemons, zero network overhead.
+- ⚡ **SQLite WAL Mode:** Concurrency-safe, high-throughput atomic read/writes that survive crashes and power loss.
+- 🔄 **3-in-1 Architecture:**
+  1. **Key-Value Store:** Fast storage with TTL auto-expiry, atomic multi-set, and numeric operations.
+  2. **State Machine & Sagas:** FSM engine with persistent snapshots, guards, and automatic rollback on step failure (compensating transactions).
+  3. **Event Streams & Pub/Sub:** Redis Streams-like append-only event store with consumer cursors and middleware pipelines (rate limiting, deduplication, filtering).
+
+---
+
+## 📦 Installation
+
+```bash
+pip install purr
+```
+
+*(Or install locally via `pip install -e .`)*
+
+---
+
+## 🚀 Quick Tour
+
+### 1. Key-Value Store with TTL & Atomic Operations
 
 ```python
 from purr import Store
 
-# Create a store
-store = Store("my.db")
+# Initialize store (in-memory or persistent file)
+store = Store("app_state.db")
 
-# Basic operations
-store.set("key", "value")
-store.get("key")  # "value"
-store.delete("key")
+# Basic KV operations
+store.set("user:1001", {"name": "Alice", "role": "admin"})
+user = store.get("user:1001")
 
-# TTL
-store.set("temp", "data", ttl=60)  # expires in 60 seconds
+# Auto-expiring keys (TTL in seconds)
+store.set("session_token", "xyz-123", ttl=3600)
 
-# Atomic multi-set
-store.mset({"a": 1, "b": 2, "c": 3})
+# Atomic multi-set and counters
+store.mset({"counter": 0, "status": "active"})
+store.incr("counter", 1)  # returns 1
 ```
 
-## State Machine
+---
+
+### 2. State Machine with Persistence & Snapshots
 
 ```python
 from purr import StateMachine
 
-# Create a machine
-sm = StateMachine("order", db_path="state.db")
+sm = StateMachine("order_pipeline", db_path="pipeline.db")
 
 # Define transitions
-sm.add_transition("idle", "processing", "submit")
-sm.add_transition("processing", "done", "complete")
-sm.add_transition("processing", "failed", "error")
+sm.add_transition("idle", "processing", "start_job")
+sm.add_transition("processing", "completed", "finish_job")
+sm.add_transition("processing", "failed", "report_error")
 
-# Use it
-sm.set_state("idle")
-sm.send("submit")  # Now in "processing"
-sm.send("complete")  # Now in "done"
+# Transition state
+sm.transition("start_job")
+assert sm.current_state == "processing"
+
+# Take persistent snapshots for crash recovery
+snapshot_id = sm.snapshot()
+sm.restore(snapshot_id)
 ```
 
-## Saga
+---
+
+### 3. Sagas (Compensating Transactions)
+
+Execute multi-step distributed operations safely. If any step fails, PURR automatically executes compensating rollback actions in reverse order.
 
 ```python
 from purr import Saga
 
-async def create_order(data):
-    return {"order_id": 123}
+saga = Saga("deploy_workflow", db_path="sagas.db")
 
-async def charge_payment(data):
-    return {"payment_id": "abc"}
+def allocate_resources(ctx):
+    ctx["allocated"] = True
 
-async def compensate_payment(data):
-    pass  # Refund logic
+def release_resources(ctx):
+    ctx["allocated"] = False
 
-# Build saga
-saga = Saga("order-creation")
-saga.add_step("create_order", create_order)
-saga.add_step("charge_payment", charge_payment, compensation=compensate_payment)
+def run_failing_migration(ctx):
+    raise RuntimeError("Migration failed!")
 
-# Execute
-result = await saga.execute({"user_id": 1})
+# Define steps: (name, forward_action, compensate_action)
+saga.add_step("reserve", allocate_resources, compensate=release_resources)
+saga.add_step("migrate", run_failing_migration)
+
+# If step 2 fails, 'release_resources' is executed automatically
+result = saga.execute()
+assert result.failed is True
 ```
 
-## Middleware
+---
+
+### 4. Event Streams & Consumer Groups (Redis Streams alternative)
+
+Append-only persistent event logs with cursor tracking across multiple consumers.
 
 ```python
-from purr import MiddlewarePipeline, LoggingMiddleware, RateLimitMiddleware
+from purr import EventStream
 
-pipeline = MiddlewarePipeline()
-pipeline.add(LoggingMiddleware())
-pipeline.add(RateLimitMiddleware(max_per_second=10))
+stream = EventStream("events.db")
 
-# Execute through pipeline
-await pipeline.execute(event, handler)
+# Publish events
+event_id = stream.append(topic="user_signups", payload={"user_id": 42})
+
+# Read events since consumer cursor
+events = stream.read(topic="user_signups", after_cursor="cursor_id", limit=50)
 ```
 
-## License
+---
 
-MIT
+### 5. Pub/Sub with Middleware Pipeline
+
+```python
+import asyncio
+from purr import EventBus
+from purr.middleware import DedupMiddleware, RateLimitMiddleware
+
+bus = EventBus()
+bus.use(DedupMiddleware(window_seconds=60))
+bus.use(RateLimitMiddleware(max_per_second=100))
+
+async def handle_alert(event):
+    print(f"Alert received: {event.payload}")
+
+bus.subscribe("system.alerts.*", handle_alert)
+asyncio.run(bus.publish("system.alerts.cpu", {"usage": "98%"}))
+```
+
+---
+
+## 🛠️ Development & Testing
+
+Run the full test suite (44 tests):
+
+```bash
+uv run --with pytest --with pytest-asyncio pytest -v
+```
+
+---
+
+## 📄 License
+
+MIT License. See [LICENSE](LICENSE) for details.
