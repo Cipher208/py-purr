@@ -16,7 +16,11 @@ from typing import Any
 
 
 class Store:
-    """Thread-safe key-value store backed by SQLite WAL."""
+    """Thread-safe key-value store backed by SQLite WAL.
+
+    Instance isolation contract: each instance holds its own connection.
+    Multiple instances may share one file safely; call close() when done.
+    """
 
     def __init__(self, db_path: str | Path = "purr.db") -> None:
         self._db_path = Path(db_path)

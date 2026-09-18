@@ -22,7 +22,11 @@ from .event import Event, EventType
 
 
 class EventStream:
-    """Persistent event stream with cursors."""
+    """Persistent event stream with cursors.
+
+    Instance isolation contract: each instance holds its own connection.
+    Cursor reads order by (timestamp, rowid); call close() when done.
+    """
 
     def __init__(self, db_path: str | Path = "events.db") -> None:
         self._db_path = Path(db_path)

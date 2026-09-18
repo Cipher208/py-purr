@@ -40,6 +40,10 @@ class Transition(BaseModel):
 class StateMachine:
     """Finite state machine with SQLite WAL persistence.
 
+    Instance isolation contract: each instance holds its own connection and
+    in-memory current state. Sharing one machine name across live instances
+    is last-writer-wins; prefer one live instance per name. Call close().
+
     Features:
     - Thread-safe (threading.local connections)
     - WAL mode for concurrent reads

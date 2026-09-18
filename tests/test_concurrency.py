@@ -1,4 +1,5 @@
 """Writer-contention contract: every connection waits on locked DB (H1-2)."""
+
 from purr import EventStream, StateMachine, Store
 
 BUSY_TIMEOUT_MS = 5000
@@ -23,3 +24,15 @@ def test_event_stream_busy_timeout(tmp_path):
     row = es._get_conn().execute("PRAGMA busy_timeout").fetchone()
     assert row[0] == BUSY_TIMEOUT_MS
     es.close()
+
+
+def test_two_instances_share_file_safely(tmp_path):
+    db = tmp_path / "shared.db"
+    s1 = Store(db)
+    s2 = Store(db)
+    s1.set("k", "v")
+    assert s2.get("k") == "v"
+    s1.close()
+    s2.set("k2", "w")
+    assert s2.get("k2") == "w"
+    s2.close()
