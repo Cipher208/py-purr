@@ -1,6 +1,7 @@
 """Tests for PURR Store."""
 
 import pytest
+
 from purr import Store
 
 

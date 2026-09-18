@@ -6,14 +6,17 @@ Removed project-specific event types, kept core saga pattern.
 
 from __future__ import annotations
 
-import asyncio
-from enum import Enum
-from typing import Any, Callable, Coroutine
+import contextlib
+from collections.abc import Callable, Coroutine
+from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class SagaStatus(str, Enum):
+class SagaStatus(StrEnum):
+    """Lifecycle states of a saga execution."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -49,10 +52,12 @@ class Saga:
 
     @property
     def status(self) -> SagaStatus:
+        """Current execution status of the saga."""
         return self._status
 
     @property
     def data(self) -> dict[str, Any]:
+        """Working data accumulated by completed steps."""
         return self._data
 
     def add_step(
@@ -102,10 +107,9 @@ class Saga:
         for i in range(failed_step - 1, -1, -1):
             step = self._steps[i]
             if step.status == SagaStatus.COMPLETED and step.compensation:
-                try:
+                # Compensation failed, continue with others
+                with contextlib.suppress(Exception):
                     await step.compensation(step.data)
-                except Exception:
-                    pass  # Compensation failed, continue with others
 
         self._status = SagaStatus.COMPENSATED
 

@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class HealthStatus(str, Enum):
+class HealthStatus(StrEnum):
+    """Possible health states of a component."""
+
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     UNHEALTHY = "unhealthy"

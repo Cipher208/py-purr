@@ -1,4 +1,5 @@
 """HealthChecker contract: register, check, aggregate (Task 2)."""
+
 from purr.health import ComponentHealth, HealthChecker, HealthStatus
 
 

@@ -1,6 +1,7 @@
 """Tests for PURR State Machine."""
 
 import pytest
+
 from purr import StateMachine
 
 
@@ -31,9 +32,7 @@ class TestStateMachine:
         assert sm.current_state == "idle"
 
     def test_guard(self, sm):
-        sm.add_transition(
-            "idle", "active", "start", guard=lambda s, d: d.get("allowed", False)
-        )
+        sm.add_transition("idle", "active", "start", guard=lambda s, d: d.get("allowed", False))
         sm.set_state("idle")
         assert sm.send("start", {"allowed": False}) is False
         assert sm.current_state == "idle"

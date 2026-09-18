@@ -6,10 +6,11 @@ and thread-safe connections.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +54,7 @@ class Store:
     def set(self, key: str, value: Any, ttl: float | None = None) -> bool:
         """Set a key-value pair. Returns True if new, False if updated."""
         conn = self._get_conn()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         value_json = json.dumps(value)
         value_type = type(value).__name__
 
@@ -68,8 +69,8 @@ class Store:
         )
 
         if ttl is not None:
-            expires_at = datetime.now(timezone.utc).timestamp() + ttl
-            expires_str = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+            expires_at = datetime.now(UTC).timestamp() + ttl
+            expires_str = datetime.fromtimestamp(expires_at, tz=UTC).isoformat()
             conn.execute(
                 "INSERT OR REPLACE INTO kv_meta (key, expires_at) VALUES (?, ?)",
                 (key, expires_str),
@@ -84,12 +85,10 @@ class Store:
         """Get value by key. Returns None if not found or expired."""
         conn = self._get_conn()
 
-        meta = conn.execute(
-            "SELECT expires_at FROM kv_meta WHERE key = ?", (key,)
-        ).fetchone()
+        meta = conn.execute("SELECT expires_at FROM kv_meta WHERE key = ?", (key,)).fetchone()
         if meta and meta["expires_at"]:
             expires_at = datetime.fromisoformat(meta["expires_at"])
-            if datetime.now(timezone.utc) > expires_at:
+            if datetime.now(UTC) > expires_at:
                 self.delete(key)
                 return None
 
@@ -117,21 +116,17 @@ class Store:
             rows = conn.execute("SELECT key FROM kv").fetchall()
         else:
             sql_pattern = pattern.replace("*", "%")
-            rows = conn.execute(
-                "SELECT key FROM kv WHERE key LIKE ?", (sql_pattern,)
-            ).fetchall()
+            rows = conn.execute("SELECT key FROM kv WHERE key LIKE ?", (sql_pattern,)).fetchall()
         return [row["key"] for row in rows]
 
     def ttl(self, key: str) -> float | None:
         """Get TTL in seconds. Returns None if no expiry, -1 if expired."""
         conn = self._get_conn()
-        meta = conn.execute(
-            "SELECT expires_at FROM kv_meta WHERE key = ?", (key,)
-        ).fetchone()
+        meta = conn.execute("SELECT expires_at FROM kv_meta WHERE key = ?", (key,)).fetchone()
         if not meta or not meta["expires_at"]:
             return None
         expires_at = datetime.fromisoformat(meta["expires_at"])
-        remaining = (expires_at - datetime.now(timezone.utc)).total_seconds()
+        remaining = (expires_at - datetime.now(UTC)).total_seconds()
         return max(remaining, -1)
 
     def expire(self, key: str, ttl: float) -> bool:
@@ -140,8 +135,8 @@ class Store:
         row = conn.execute("SELECT key FROM kv WHERE key = ?", (key,)).fetchone()
         if not row:
             return False
-        expires_at = datetime.now(timezone.utc).timestamp() + ttl
-        expires_str = datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat()
+        expires_at = datetime.now(UTC).timestamp() + ttl
+        expires_str = datetime.fromtimestamp(expires_at, tz=UTC).isoformat()
         conn.execute(
             "INSERT OR REPLACE INTO kv_meta (key, expires_at) VALUES (?, ?)",
             (key, expires_str),
@@ -171,7 +166,7 @@ class Store:
     def mset(self, mapping: dict[str, Any]) -> None:
         """Set multiple keys atomically."""
         conn = self._get_conn()
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         for key, value in mapping.items():
             value_json = json.dumps(value)
             value_type = type(value).__name__
@@ -205,8 +200,6 @@ class Store:
     def close(self) -> None:
         """Close the connection for this thread."""
         if hasattr(self._local, "conn") and self._local.conn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._local.conn.close()
-            except Exception:
-                pass
             self._local.conn = None

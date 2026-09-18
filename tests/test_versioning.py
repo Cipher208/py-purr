@@ -1,4 +1,5 @@
 """EventVersioner contract: chained migration, passthrough (Task 2)."""
+
 from purr.event import Event, EventType
 from purr.versioning import EventVersioner
 

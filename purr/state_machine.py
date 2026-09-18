@@ -6,12 +6,14 @@ Removed project-specific states, kept core FSM functionality.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -21,7 +23,7 @@ class State(BaseModel):
 
     name: str
     data: dict[str, Any] = {}
-    entered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    entered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     metadata: dict[str, Any] = {}
 
 
@@ -115,10 +117,12 @@ class StateMachine:
 
     @property
     def current_state(self) -> str | None:
+        """Name of the current state, or None before set_state."""
         return self._current.name if self._current else None
 
     @property
     def state_data(self) -> dict[str, Any]:
+        """Data payload of the current state (empty before set_state)."""
         return self._current.data if self._current else {}
 
     def send(self, event: str, data: dict[str, Any] | None = None) -> bool:
@@ -176,7 +180,7 @@ class StateMachine:
                 self.name,
                 self._current.name,
                 json.dumps(self._current.data),
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
         conn.commit()
@@ -225,9 +229,7 @@ class StateMachine:
 
     def _load_state(self) -> None:
         conn = self._get_conn()
-        row = conn.execute(
-            "SELECT * FROM state_machines WHERE name = ?", (self.name,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM state_machines WHERE name = ?", (self.name,)).fetchone()
         if row:
             self._current = State(
                 name=row["current_state"],
@@ -249,7 +251,7 @@ class StateMachine:
                 self.name,
                 self._current.name,
                 json.dumps(self._current.data),
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
         conn.commit()
@@ -257,8 +259,6 @@ class StateMachine:
     def close(self) -> None:
         """Close the connection for this thread."""
         if hasattr(self._local, "conn") and self._local.conn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._local.conn.close()
-            except Exception:
-                pass
             self._local.conn = None

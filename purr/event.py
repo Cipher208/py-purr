@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import uuid
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """Event types."""
 
     STATE = "state"
@@ -28,7 +29,7 @@ class Event(BaseModel):
     type: EventType
     topic: str
     payload: dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     correlation_id: str | None = None
     version: int = 1
     source: str = ""
@@ -61,22 +62,21 @@ class EventBus:
         """Publish an event to all subscribers."""
         self._history.append(event)
         if len(self._history) > self._max_history:
-            self._history = self._history[-self._max_history:]
+            self._history = self._history[-self._max_history :]
 
         handlers = self._handlers.get(event.topic, [])
         wildcard_handlers = self._handlers.get("*", [])
 
         for handler in handlers + wildcard_handlers:
-            try:
+            # Don't let handler errors break the bus
+            with contextlib.suppress(Exception):
                 await handler(event)
-            except Exception:
-                pass  # Don't let handler errors break the bus
 
     def publish_sync(self, event: Event) -> None:
         """Publish synchronously (for non-async contexts)."""
         self._history.append(event)
         if len(self._history) > self._max_history:
-            self._history = self._history[-self._max_history:]
+            self._history = self._history[-self._max_history :]
 
     def get_history(self, topic: str | None = None, limit: int = 100) -> list[Event]:
         """Get event history."""

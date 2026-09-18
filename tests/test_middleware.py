@@ -1,4 +1,5 @@
 """Middleware contract: dedup, rate-limit, pipeline chain (Task 2)."""
+
 import asyncio
 
 from purr.event import Event, EventType

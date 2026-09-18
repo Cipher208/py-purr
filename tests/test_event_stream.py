@@ -1,6 +1,7 @@
 """Tests for PURR EventStream."""
 
 import pytest
+
 from purr import Event, EventStream, EventType
 
 

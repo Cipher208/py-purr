@@ -1,6 +1,7 @@
 """Tests for PURR EventBus."""
 
 import pytest
+
 from purr import Event, EventBus, EventType
 
 

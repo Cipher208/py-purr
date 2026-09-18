@@ -6,7 +6,7 @@ Migrates events between schema versions.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
 
 from .event import Event
 

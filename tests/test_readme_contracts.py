@@ -1,4 +1,5 @@
 """README-contract tests: every README tour must run verbatim (D1)."""
+
 from purr import DedupMiddleware, Event, EventBus, EventStream, EventType, Saga, StateMachine, Store
 
 
@@ -67,9 +68,7 @@ def test_event_bus_tour():
             seen.append(event.payload)
 
         bus.subscribe("system.alerts.cpu", handle_alert)
-        event = Event(
-            type=EventType.SYSTEM, topic="system.alerts.cpu", payload={"usage": "98%"}
-        )
+        event = Event(type=EventType.SYSTEM, topic="system.alerts.cpu", payload={"usage": "98%"})
         await bus.publish(event)
         return seen
 

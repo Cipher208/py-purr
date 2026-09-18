@@ -7,7 +7,8 @@ Generic middleware for any event-based system.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from .event import Event
 
@@ -19,6 +20,7 @@ class Middleware(ABC):
 
     @abstractmethod
     async def process(self, event: Event, next: MiddlewareNext) -> None:
+        """Handle an event: act, then call next(event) to continue the chain."""
         ...
 
 
@@ -29,6 +31,7 @@ class LoggingMiddleware(Middleware):
         self._logger = logger
 
     async def process(self, event: Event, next: MiddlewareNext) -> None:
+        """Log the event, then always continue the chain."""
         msg = f"[{event.type.value}] {event.topic} id={event.id[:8]}"
         if event.correlation_id:
             msg += f" corr={event.correlation_id[:8]}"
@@ -53,6 +56,7 @@ class RateLimitMiddleware(Middleware):
         self._last_refill = 0.0
 
     async def process(self, event: Event, next: MiddlewareNext) -> None:
+        """Token-bucket gate: drop the event when no tokens remain."""
         import time
 
         now = time.monotonic()
@@ -79,6 +83,7 @@ class DedupMiddleware(Middleware):
         self._ttl = ttl_seconds
 
     async def process(self, event: Event, next: MiddlewareNext) -> None:
+        """Drop events with an already-seen id, pass new ones through."""
         import time
 
         now = time.monotonic()
@@ -116,6 +121,7 @@ class FilterMiddleware(Middleware):
         self._allowed_types = set(allowed_types) if allowed_types else None
 
     async def process(self, event: Event, next: MiddlewareNext) -> None:
+        """Drop blocked topics and anything outside the allow-lists."""
         if self._allowed_topics and event.topic not in self._allowed_topics:
             return
         if event.topic in self._blocked_topics:
@@ -132,6 +138,7 @@ class TransformMiddleware(Middleware):
         self._transformer = transformer
 
     async def process(self, event: Event, next: MiddlewareNext) -> None:
+        """Apply the transformer (if set), then continue the chain."""
         if self._transformer:
             event = self._transformer(event)
         await next(event)
@@ -152,14 +159,14 @@ class MiddlewarePipeline:
         chain = handler
 
         for middleware in reversed(self._middlewares):
-            next_chain = chain
 
-            async def make_chain(m: Middleware, n: MiddlewareNext) -> MiddlewareNext:
-                async def chain(e: Event) -> None:
-                    await m.process(e, n)
+            async def link(
+                e: Event,
+                _m: Middleware = middleware,
+                _n: MiddlewareNext = chain,
+            ) -> None:
+                await _m.process(e, _n)
 
-                return chain
-
-            chain = await make_chain(middleware, next_chain)
+            chain = link
 
         await chain(event)

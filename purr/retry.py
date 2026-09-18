@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import random
-from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -66,9 +67,7 @@ class RetryHandler:
 
     def _calculate_delay(self, attempt: int) -> float:
         """Calculate delay with exponential backoff and jitter."""
-        delay = self._config.base_delay * (
-            self._config.exponential_base ** (attempt - 1)
-        )
+        delay = self._config.base_delay * (self._config.exponential_base ** (attempt - 1))
         delay = min(delay, self._config.max_delay)
         if self._config.jitter:
             delay *= 0.5 + random.random()

@@ -10,10 +10,11 @@ Like Redis Streams but on SQLite. Supports:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -130,9 +131,7 @@ class EventStream:
     def get_cursor(self, name: str) -> str | None:
         """Get cursor position."""
         conn = self._get_conn()
-        row = conn.execute(
-            "SELECT last_event_id FROM cursors WHERE name = ?", (name,)
-        ).fetchone()
+        row = conn.execute("SELECT last_event_id FROM cursors WHERE name = ?", (name,)).fetchone()
         return row["last_event_id"] if row else None
 
     def set_cursor(self, name: str, event_id: str) -> None:
@@ -143,7 +142,7 @@ class EventStream:
             INSERT OR REPLACE INTO cursors (name, last_event_id, updated_at)
             VALUES (?, ?, ?)
             """,
-            (name, event_id, datetime.now(timezone.utc).isoformat()),
+            (name, event_id, datetime.now(UTC).isoformat()),
         )
         conn.commit()
 
@@ -168,10 +167,8 @@ class EventStream:
     def close(self) -> None:
         """Close the connection for this thread."""
         if hasattr(self._local, "conn") and self._local.conn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._local.conn.close()
-            except Exception:
-                pass
             self._local.conn = None
 
     def _row_to_event(self, row: sqlite3.Row) -> Event:
