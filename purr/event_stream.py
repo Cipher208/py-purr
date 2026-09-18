@@ -31,9 +31,11 @@ class EventStream(SQLiteBackend):
         super().__init__(db_path)
 
     def _init_db(self) -> None:
-        conn = self._get_conn()
-        conn.executescript(
-            """
+        self.run_migrations()
+
+    SCHEMA_VERSION = 1
+    MIGRATIONS = {
+        1: """
             CREATE TABLE IF NOT EXISTS events (
                 id TEXT PRIMARY KEY,
                 type TEXT NOT NULL,
@@ -54,9 +56,8 @@ class EventStream(SQLiteBackend):
                 last_event_id TEXT,
                 updated_at TEXT NOT NULL
             );
-            """
-        )
-        conn.commit()
+            """,
+    }
 
     def append(self, event: Event) -> None:
         """Append an event to the stream."""

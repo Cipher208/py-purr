@@ -38,3 +38,40 @@ def test_backend_stats(tmp_path):
     assert stats["db_bytes"] > 0
     assert "wal_bytes" in stats
     b.close()
+
+
+class Mig(SQLiteBackend):
+    SCHEMA_VERSION = 2
+    MIGRATIONS = {
+        1: "CREATE TABLE IF NOT EXISTS m1 (id INTEGER);",
+        2: "CREATE TABLE IF NOT EXISTS m2 (id INTEGER);",
+    }
+
+    def _init_db(self):
+        self.run_migrations()
+
+
+def test_migrations_run_to_latest(tmp_path):
+    m = Mig(tmp_path / "m.db")
+    conn = m._get_conn()
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"m1", "m2"} <= tables
+    m.close()
+
+
+def test_migrations_idempotent_and_legacy_safe(tmp_path):
+    db = tmp_path / "m.db"
+    Mig(db).close()
+    m2 = Mig(db)
+    assert m2._get_conn().execute("PRAGMA user_version").fetchone()[0] == 2
+    m2.close()
+    import sqlite3
+
+    legacy = sqlite3.connect(str(db))
+    legacy.execute("PRAGMA user_version=0")
+    legacy.commit()
+    legacy.close()
+    m3 = Mig(db)
+    assert m3._get_conn().execute("PRAGMA user_version").fetchone()[0] == 2
+    m3.close()

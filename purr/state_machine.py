@@ -67,9 +67,11 @@ class StateMachine(SQLiteBackend):
         self._load_state()
 
     def _init_db(self) -> None:
-        conn = self._get_conn()
-        conn.executescript(
-            """
+        self.run_migrations()
+
+    SCHEMA_VERSION = 1
+    MIGRATIONS = {
+        1: """
             CREATE TABLE IF NOT EXISTS state_machines (
                 name TEXT PRIMARY KEY,
                 current_state TEXT NOT NULL,
@@ -84,9 +86,8 @@ class StateMachine(SQLiteBackend):
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (machine_name) REFERENCES state_machines(name)
             );
-            """
-        )
-        conn.commit()
+            """,
+    }
 
     def add_transition(
         self,

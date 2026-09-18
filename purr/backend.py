@@ -17,6 +17,8 @@ class SQLiteBackend:
     """Base for file-backed engines sharing one SQLite database file."""
 
     BUSY_TIMEOUT_MS = 5000
+    SCHEMA_VERSION = 1
+    MIGRATIONS: dict[int, str] = {}
 
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = Path(db_path)
@@ -25,6 +27,19 @@ class SQLiteBackend:
 
     def _init_db(self) -> None:
         """Create schema. Subclasses implement with their own DDL."""
+
+    def run_migrations(self) -> int:
+        """Apply pending MIGRATIONS in order. Returns applied count."""
+        conn = self._get_conn()
+        current = conn.execute("PRAGMA user_version").fetchone()[0] or 0
+        applied = 0
+        for version in sorted(self.MIGRATIONS):
+            if version > current:
+                conn.executescript(self.MIGRATIONS[version])
+                conn.execute(f"PRAGMA user_version={version}")
+                applied += 1
+        conn.commit()
+        return applied
 
     def _get_conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:

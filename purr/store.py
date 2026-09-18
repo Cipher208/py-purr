@@ -25,9 +25,11 @@ class Store(SQLiteBackend):
         super().__init__(db_path)
 
     def _init_db(self) -> None:
-        conn = self._get_conn()
-        conn.executescript(
-            """
+        self.run_migrations()
+
+    SCHEMA_VERSION = 1
+    MIGRATIONS = {
+        1: """
             CREATE TABLE IF NOT EXISTS kv (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
@@ -40,9 +42,8 @@ class Store(SQLiteBackend):
                 expires_at TEXT,
                 FOREIGN KEY (key) REFERENCES kv(key)
             );
-            """
-        )
-        conn.commit()
+            """,
+    }
 
     def set(self, key: str, value: Any, ttl: float | None = None) -> bool:
         """Set a key-value pair. Returns True if new, False if updated."""
