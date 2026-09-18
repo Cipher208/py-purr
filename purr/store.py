@@ -117,8 +117,12 @@ class Store:
         if pattern == "*":
             rows = conn.execute("SELECT key FROM kv").fetchall()
         else:
-            sql_pattern = pattern.replace("*", "%")
-            rows = conn.execute("SELECT key FROM kv WHERE key LIKE ?", (sql_pattern,)).fetchall()
+            sql_pattern = pattern.replace("\\", "\\\\")
+            sql_pattern = sql_pattern.replace("%", "\\%").replace("_", "\\_")
+            sql_pattern = sql_pattern.replace("*", "%")
+            rows = conn.execute(
+                "SELECT key FROM kv WHERE key LIKE ? ESCAPE '\\'", (sql_pattern,)
+            ).fetchall()
         return [row["key"] for row in rows]
 
     def ttl(self, key: str) -> float | None:

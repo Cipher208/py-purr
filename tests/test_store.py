@@ -47,6 +47,11 @@ class TestStoreBasic:
         keys = store.keys("user:*")
         assert sorted(keys) == ["user:1", "user:2"]
 
+    def test_keys_pattern_treats_underscore_literally(self, store):
+        store.set("user_1", "alice")
+        store.set("userX1", "bob")
+        assert store.keys("user_1") == ["user_1"]
+
     def test_flush(self, store):
         store.set("a", 1)
         store.set("b", 2)
