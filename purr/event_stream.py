@@ -153,6 +153,23 @@ class EventStream(SQLiteBackend):
             row = conn.execute("SELECT COUNT(*) as cnt FROM events").fetchone()
         return row["cnt"]
 
+    def count_since(self, topic: str | None = None, seconds: float = 3600) -> int:
+        """Count events in the trailing window. Compute-on-read by design."""
+        from datetime import UTC, datetime, timedelta
+
+        cutoff = (datetime.now(UTC) - timedelta(seconds=seconds)).isoformat()
+        conn = self._get_conn()
+        if topic:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM events WHERE topic = ? AND timestamp >= ?",
+                (topic, cutoff),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM events WHERE timestamp >= ?", (cutoff,)
+            ).fetchone()
+        return row["cnt"]
+
     def clear(self) -> None:
         """Clear all events and cursors."""
         conn = self._get_conn()

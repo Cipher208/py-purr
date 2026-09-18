@@ -84,3 +84,21 @@ class TestEventStream:
 
         stream.clear()
         assert stream.count() == 0
+
+    def test_count_since_window(self, stream):
+        from datetime import UTC, datetime, timedelta
+
+        old = Event(
+            type=EventType.SYSTEM,
+            topic="err",
+            payload={},
+            timestamp=datetime.now(UTC) - timedelta(hours=2),
+        )
+        fresh = Event(type=EventType.SYSTEM, topic="err", payload={})
+        other = Event(type=EventType.SYSTEM, topic="ok", payload={})
+        stream.append(old)
+        stream.append(fresh)
+        stream.append(other)
+
+        assert stream.count_since("err", seconds=3600) == 1
+        assert stream.count_since(seconds=3600) == 2
