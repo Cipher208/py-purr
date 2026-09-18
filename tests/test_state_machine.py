@@ -2,7 +2,7 @@
 
 import pytest
 
-from purr import StateMachine
+from purr import EventStream, StateMachine
 
 
 @pytest.fixture
@@ -107,3 +107,28 @@ class TestStateMachinePersistence:
         assert len(sm.get_snapshots()) == 5
         assert sm.prune_snapshots(keep=2) == 3
         assert len(sm.get_snapshots()) == 2
+
+
+class TestStateMachineJournal:
+    def test_transition_appended_to_journal(self, tmp_path):
+        es = EventStream(tmp_path / "j.db")
+        sm = StateMachine("m", db_path=tmp_path / "s.db", journal=es)
+        sm.add_transition("idle", "flow", "start")
+        sm.set_state("idle")
+        assert sm.send("start") is True
+        events, _ = es.read(topic="fsm")
+        assert [(e.payload["op"], e.payload.get("from"), e.payload.get("to")) for e in events] == [
+            ("set", None, "idle"),
+            ("transition", "idle", "flow"),
+        ]
+        sm.close()
+        es.close()
+
+    def test_no_journal_no_stream_writes(self, tmp_path):
+        es = EventStream(tmp_path / "j.db")
+        sm = StateMachine("m", db_path=tmp_path / "s.db")
+        sm.set_state("idle")
+        events, _ = es.read(topic="fsm")
+        assert events == []
+        sm.close()
+        es.close()

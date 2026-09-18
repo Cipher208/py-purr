@@ -10,11 +10,15 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from .backend import SQLiteBackend
+from .event import Event, EventType
+
+if TYPE_CHECKING:
+    from .event_stream import EventStream
 
 
 class State(BaseModel):
@@ -56,8 +60,10 @@ class StateMachine(SQLiteBackend):
         self,
         name: str,
         db_path: str | Path = "state.db",
+        journal: EventStream | None = None,
     ) -> None:
         self.name = name
+        self._journal = journal
         super().__init__(db_path)
         self._transitions: list[Transition] = []
         self._on_enter: dict[str, Callable[[State], None]] = {}
@@ -65,6 +71,12 @@ class StateMachine(SQLiteBackend):
         self._current: State | None = None
         self._init_db()
         self._load_state()
+
+    def _journal_emit(self, payload: dict[str, Any]) -> None:
+        """Append a transition event to the journal stream."""
+        if self._journal is None:
+            return
+        self._journal.append(Event(type=EventType.STATE, topic="fsm", payload=payload))
 
     def _init_db(self) -> None:
         self.run_migrations()
@@ -148,6 +160,14 @@ class StateMachine(SQLiteBackend):
                 )
                 self._current = new_state
                 self._save_state()
+                self._journal_emit(
+                    {
+                        "op": "transition",
+                        "event": event,
+                        "from": old_state.name,
+                        "to": new_state.name,
+                    }
+                )
 
                 if new_state.name in self._on_enter:
                     self._on_enter[new_state.name](new_state)
@@ -159,6 +179,7 @@ class StateMachine(SQLiteBackend):
         """Force set state (bypasses transitions)."""
         self._current = State(name=name, data=data or {})
         self._save_state()
+        self._journal_emit({"op": "set", "from": None, "to": name})
 
     def snapshot(self) -> None:
         """Save current state as a snapshot."""
