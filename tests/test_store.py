@@ -145,3 +145,8 @@ class TestStoreNumeric:
         store.set("key", "not a number")
         with pytest.raises(TypeError):
             store.incr("key")
+
+    def test_incr_float_keeps_fraction(self, store):
+        store.set("price", 2.5)
+        assert store.incr("price", 1) == 3.5
+        assert store.get("price") == 3.5

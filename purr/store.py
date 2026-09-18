@@ -158,7 +158,7 @@ class Store:
             current = json.loads(row["value"])
             if not isinstance(current, (int, float)):
                 raise TypeError(f"Cannot increment non-numeric value: {key}")
-            new_val = int(current) + amount
+            new_val = current + amount if isinstance(current, float) else int(current) + amount
         else:
             new_val = amount
 
