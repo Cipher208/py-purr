@@ -34,6 +34,8 @@ class EventStream:
             self._local.conn = sqlite3.connect(str(self._db_path))
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn.execute("PRAGMA synchronous=NORMAL")
+            # Explicit writer-wait contract: do not rely on the driver default.
+            self._local.conn.execute("PRAGMA busy_timeout=5000")
             self._local.conn.row_factory = sqlite3.Row
         return self._local.conn
 
