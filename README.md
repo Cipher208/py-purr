@@ -71,13 +71,14 @@ sm.add_transition("idle", "processing", "start_job")
 sm.add_transition("processing", "completed", "finish_job")
 sm.add_transition("processing", "failed", "report_error")
 
-# Transition state
-sm.transition("start_job")
+# Transition state (machine starts empty — set the initial state first)
+sm.set_state("idle")
+sm.send("start_job")
 assert sm.current_state == "processing"
 
 # Take persistent snapshots for crash recovery
-snapshot_id = sm.snapshot()
-sm.restore(snapshot_id)
+sm.snapshot()
+sm.restore_snapshot()
 ```
 
 ---
@@ -87,26 +88,31 @@ sm.restore(snapshot_id)
 Execute multi-step distributed operations safely. If any step fails, PURR automatically executes compensating rollback actions in reverse order.
 
 ```python
+import asyncio
 from purr import Saga
 
-saga = Saga("deploy_workflow", db_path="sagas.db")
+saga = Saga("deploy_workflow")
 
-def allocate_resources(ctx):
+async def allocate_resources(ctx):
     ctx["allocated"] = True
+    return ctx
 
-def release_resources(ctx):
+async def release_resources(ctx):
     ctx["allocated"] = False
 
-def run_failing_migration(ctx):
+async def run_failing_migration(ctx):
     raise RuntimeError("Migration failed!")
 
-# Define steps: (name, forward_action, compensate_action)
-saga.add_step("reserve", allocate_resources, compensate=release_resources)
+# Define steps: (name, forward_action, compensation)
+saga.add_step("reserve", allocate_resources, compensation=release_resources)
 saga.add_step("migrate", run_failing_migration)
 
-# If step 2 fails, 'release_resources' is executed automatically
-result = saga.execute()
-assert result.failed is True
+# If step 2 fails, 'release_resources' is executed automatically,
+# then the error propagates (no result flag — expect the raise)
+try:
+    asyncio.run(saga.execute())
+except RuntimeError as exc:
+    assert str(exc) == "Migration failed!"
 ```
 
 ---
@@ -116,15 +122,16 @@ assert result.failed is True
 Append-only persistent event logs with cursor tracking across multiple consumers.
 
 ```python
-from purr import EventStream
+from purr import Event, EventStream, EventType
 
 stream = EventStream("events.db")
 
 # Publish events
-event_id = stream.append(topic="user_signups", payload={"user_id": 42})
+stream.append(Event(type=EventType.SYSTEM, topic="user_signups", payload={"user_id": 42}))
 
-# Read events since consumer cursor
-events = stream.read(topic="user_signups", after_cursor="cursor_id", limit=50)
+# Read events, track consumer cursor
+events, last_id = stream.read(topic="user_signups", limit=50)
+stream.set_cursor("my-consumer", last_id)
 ```
 
 ---
@@ -133,18 +140,25 @@ events = stream.read(topic="user_signups", after_cursor="cursor_id", limit=50)
 
 ```python
 import asyncio
-from purr import EventBus
-from purr.middleware import DedupMiddleware, RateLimitMiddleware
+from purr import Event, EventBus, EventType
+from purr.middleware import DedupMiddleware, MiddlewarePipeline, RateLimitMiddleware
 
 bus = EventBus()
-bus.use(DedupMiddleware(window_seconds=60))
-bus.use(RateLimitMiddleware(max_per_second=100))
+
+# Middleware runs through a separate pipeline (bus has no .use());
+# exact-topic match plus the "*" wildcard only
+pipeline = MiddlewarePipeline()
+pipeline.add(DedupMiddleware(ttl_seconds=60))
+pipeline.add(RateLimitMiddleware(max_per_second=100))
 
 async def handle_alert(event):
     print(f"Alert received: {event.payload}")
 
-bus.subscribe("system.alerts.*", handle_alert)
-asyncio.run(bus.publish("system.alerts.cpu", {"usage": "98%"}))
+bus.subscribe("system.alerts.cpu", handle_alert)
+event = Event(type=EventType.SYSTEM, topic="system.alerts.cpu", payload={"usage": "98%"})
+asyncio.run(bus.publish(event))
+# Same event through the middleware pipeline (dedup + rate limit), then to the handler
+asyncio.run(pipeline.execute(event, handle_alert))
 ```
 
 ---
