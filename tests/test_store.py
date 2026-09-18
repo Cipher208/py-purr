@@ -115,6 +115,16 @@ class TestStoreTTL:
         assert store.expire("missing", 60) is False
 
 
+class TestStoreSweep:
+    def test_sweep_removes_expired(self, store):
+        store.set("fresh", 1, ttl=60)
+        store.set("dead", 2, ttl=-10)
+        assert store.size() == 2
+        assert store.sweep() == 1
+        assert store.size() == 1
+        assert store.get("fresh") == 1
+
+
 class TestStoreAtomic:
     def test_mset(self, store):
         store.mset({"a": 1, "b": 2, "c": 3})

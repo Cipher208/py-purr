@@ -189,6 +189,21 @@ class Store:
         """Get multiple values."""
         return [self.get(key) for key in keys]
 
+    def sweep(self) -> int:
+        """Delete expired keys. Returns count of removed keys."""
+        conn = self._get_conn()
+        now = datetime.now(UTC).isoformat()
+        cur = conn.execute(
+            "SELECT key FROM kv_meta WHERE expires_at IS NOT NULL AND expires_at <= ?",
+            (now,),
+        )
+        dead = [row["key"] for row in cur.fetchall()]
+        for key in dead:
+            conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+            conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
+        conn.commit()
+        return len(dead)
+
     def flush(self) -> int:
         """Delete all keys. Returns count of deleted keys."""
         conn = self._get_conn()
