@@ -14,6 +14,7 @@ A lightweight, thread-safe key-value store with:
 - Retry with exponential backoff
 """
 
+from .backend import SQLiteBackend
 from .event import Event, EventBus, EventType
 from .event_stream import EventStream
 from .health import HealthChecker, HealthStatus
@@ -35,6 +36,7 @@ from .versioning import EventVersioner
 __version__ = "0.1.0"
 
 __all__ = [
+    "SQLiteBackend",
     "Store",
     "StateMachine",
     "State",
