@@ -112,7 +112,9 @@ class EventStream:
         conditions: list[str] = []
 
         if cursor:
-            conditions.append("timestamp > (SELECT timestamp FROM events WHERE id = ?)")
+            conditions.append(
+                "(timestamp, rowid) > (SELECT timestamp, rowid FROM events WHERE id = ?)"
+            )
             params.append(cursor)
 
         if topic:
@@ -122,7 +124,7 @@ class EventStream:
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
 
-        query += " ORDER BY timestamp ASC LIMIT ?"
+        query += " ORDER BY timestamp ASC, rowid ASC LIMIT ?"
         params.append(limit)
 
         rows = conn.execute(query, params).fetchall()

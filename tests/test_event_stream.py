@@ -61,6 +61,18 @@ class TestEventStream:
         assert events[0].id == e2.id
         assert last_id == e2.id
 
+    def test_cursor_survives_same_timestamp(self, stream):
+        from datetime import UTC, datetime
+
+        ts = datetime.now(UTC)
+        e1 = Event(type=EventType.STATE, topic="w", payload={"job": 1}, timestamp=ts)
+        e2 = Event(type=EventType.STATE, topic="w", payload={"job": 2}, timestamp=ts)
+        stream.append(e1)
+        stream.append(e2)
+
+        events, _ = stream.read(cursor=e1.id)
+        assert [e.id for e in events] == [e2.id]
+
     def test_count_and_clear(self, stream):
         e1 = Event(type=EventType.SYSTEM, topic="t1", payload={})
         e2 = Event(type=EventType.SYSTEM, topic="t2", payload={})
