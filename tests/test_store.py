@@ -145,6 +145,20 @@ class TestStoreAtomic:
         assert store.mget(["a", "b", "missing"]) == [1, 2, None]
 
 
+class TestStoreTransaction:
+    def test_commit_on_clean_exit(self, store):
+        with store.transaction():
+            store.set("a", 1)
+            store.set("b", 2)
+        assert store.mget(["a", "b"]) == [1, 2]
+
+    def test_rollback_on_error(self, store):
+        with pytest.raises(RuntimeError, match="boom"), store.transaction():
+            store.set("a", 1)
+            raise RuntimeError("boom")
+        assert store.get("a") is None
+
+
 class TestStoreNumeric:
     def test_incr(self, store):
         store.set("counter", 0)

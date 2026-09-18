@@ -6,7 +6,9 @@ and thread-safe connections.
 
 from __future__ import annotations
 
+import contextlib
 import json
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,7 +24,33 @@ class Store(SQLiteBackend):
     """
 
     def __init__(self, db_path: str | Path = "purr.db") -> None:
+        self._in_transaction = False
         super().__init__(db_path)
+
+    def _commit(self) -> None:
+        """Commit unless inside an explicit transaction() block."""
+        if not self._in_transaction:
+            self._get_conn().commit()
+
+    @contextlib.contextmanager
+    def transaction(self) -> Iterator[Store]:
+        """Atomic multi-op block. Commits on clean exit, rolls back on error.
+
+        No nesting. Inner per-op commits are deferred until the block ends.
+        """
+        if self._in_transaction:
+            raise RuntimeError("nested transaction() is not supported")
+        conn = self._get_conn()
+        self._in_transaction = True
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield self
+            self._commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._in_transaction = False
 
     def _init_db(self) -> None:
         self.run_migrations()
@@ -72,7 +100,7 @@ class Store(SQLiteBackend):
         else:
             conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
 
-        conn.commit()
+        self._commit()
         return existing is None
 
     def get(self, key: str) -> Any | None:
@@ -96,7 +124,7 @@ class Store(SQLiteBackend):
         conn = self._get_conn()
         cur = conn.execute("DELETE FROM kv WHERE key = ?", (key,))
         conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
-        conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def exists(self, key: str) -> bool:
@@ -139,7 +167,7 @@ class Store(SQLiteBackend):
             "INSERT OR REPLACE INTO kv_meta (key, expires_at) VALUES (?, ?)",
             (key, expires_str),
         )
-        conn.commit()
+        self._commit()
         return True
 
     def incr(self, key: str, amount: int = 1) -> int:
@@ -175,7 +203,7 @@ class Store(SQLiteBackend):
                 """,
                 (key, value_json, value_type, key, now, now),
             )
-        conn.commit()
+        self._commit()
 
     def mget(self, keys: list[str]) -> list[Any | None]:
         """Get multiple values."""
@@ -193,7 +221,7 @@ class Store(SQLiteBackend):
         for key in dead:
             conn.execute("DELETE FROM kv WHERE key = ?", (key,))
             conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
-        conn.commit()
+        self._commit()
         return len(dead)
 
     def flush(self) -> int:
@@ -202,7 +230,7 @@ class Store(SQLiteBackend):
         count = conn.execute("SELECT COUNT(*) FROM kv").fetchone()[0]
         conn.execute("DELETE FROM kv")
         conn.execute("DELETE FROM kv_meta")
-        conn.commit()
+        self._commit()
         return count
 
     def size(self) -> int:
