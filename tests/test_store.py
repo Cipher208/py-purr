@@ -152,6 +152,18 @@ class TestStoreTransaction:
             store.set("b", 2)
         assert store.mget(["a", "b"]) == [1, 2]
 
+    def test_commit_persists_across_reopen(self, tmp_path):
+        from purr import Store as S2
+
+        db = tmp_path / "t.db"
+        s = S2(db)
+        with s.transaction():
+            s.set("a", 1)
+        s.close()
+        s2 = S2(db)
+        assert s2.get("a") == 1
+        s2.close()
+
     def test_rollback_on_error(self, store):
         with pytest.raises(RuntimeError, match="boom"), store.transaction():
             store.set("a", 1)
@@ -183,3 +195,79 @@ class TestStoreNumeric:
         store.set("price", 2.5)
         assert store.incr("price", 1) == 3.5
         assert store.get("price") == 3.5
+
+
+class TestStoreJournal:
+    def test_mutations_appended_to_journal(self, tmp_path):
+        from purr import EventStream
+
+        es = EventStream(tmp_path / "j.db")
+        s = Store(tmp_path / "s.db", journal=es)
+        s.set("a", 1)
+        s.expire("a", 60)
+        s.delete("a")
+        events, _ = es.read(topic="store")
+        assert [(e.payload["op"], e.payload.get("key")) for e in events] == [
+            ("set", "a"),
+            ("expire", "a"),
+            ("delete", "a"),
+        ]
+        s.close()
+        es.close()
+
+    def test_journal_replays_to_final_state(self, tmp_path):
+        from purr import EventStream
+
+        es = EventStream(tmp_path / "j.db")
+        s = Store(tmp_path / "s.db", journal=es)
+        s.set("a", 1)
+        s.set("b", 2)
+        s.delete("a")
+        state: dict = {}
+        events, _ = es.read(topic="store")
+        for e in events:
+            if e.payload["op"] == "delete":
+                state.pop(e.payload["key"], None)
+            else:
+                state[e.payload["key"]] = e.payload["value"]
+        assert state == {"b": 2}
+        s.close()
+        es.close()
+
+    def test_no_journal_no_stream_writes(self, tmp_path):
+        from purr import EventStream
+
+        es = EventStream(tmp_path / "j.db")
+        s = Store(tmp_path / "s.db")
+        s.set("a", 1)
+        events, _ = es.read(topic="store")
+        assert events == []
+        s.close()
+        es.close()
+
+    def test_journal_flushes_on_txn_commit(self, tmp_path):
+        from purr import EventStream
+
+        es = EventStream(tmp_path / "j.db")
+        s = Store(tmp_path / "s.db", journal=es)
+        with s.transaction():
+            s.set("a", 1)
+            events_during, _ = es.read(topic="store")
+            assert events_during == []
+        events, _ = es.read(topic="store")
+        assert [e.payload["key"] for e in events] == ["a"]
+        s.close()
+        es.close()
+
+    def test_journal_drops_on_txn_rollback(self, tmp_path):
+        from purr import EventStream
+
+        es = EventStream(tmp_path / "j.db")
+        s = Store(tmp_path / "s.db", journal=es)
+        with pytest.raises(RuntimeError, match="boom"), s.transaction():
+            s.set("a", 1)
+            raise RuntimeError("boom")
+        events, _ = es.read(topic="store")
+        assert events == []
+        s.close()
+        es.close()

@@ -11,9 +11,13 @@ import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .backend import SQLiteBackend
+from .event import Event, EventType
+
+if TYPE_CHECKING:
+    from .event_stream import EventStream
 
 
 class Store(SQLiteBackend):
@@ -23,9 +27,28 @@ class Store(SQLiteBackend):
     Multiple instances may share one file safely; call close() when done.
     """
 
-    def __init__(self, db_path: str | Path = "purr.db") -> None:
+    def __init__(self, db_path: str | Path = "purr.db", journal: EventStream | None = None) -> None:
         self._in_transaction = False
+        self._journal = journal
+        self._journal_buffer: list[dict[str, Any]] = []
         super().__init__(db_path)
+
+    def _journal_emit(self, payload: dict[str, Any]) -> None:
+        """Append a mutation event to the journal stream (buffered in txn)."""
+        if self._journal is None:
+            return
+        if self._in_transaction:
+            self._journal_buffer.append(payload)
+            return
+        self._journal.append(Event(type=EventType.STORE, topic="store", payload=payload))
+
+    def _journal_flush(self) -> None:
+        """Write buffered mutation events after transaction commit."""
+        if self._journal is None:
+            return
+        for payload in self._journal_buffer:
+            self._journal.append(Event(type=EventType.STORE, topic="store", payload=payload))
+        self._journal_buffer.clear()
 
     def _commit(self) -> None:
         """Commit unless inside an explicit transaction() block."""
@@ -45,9 +68,11 @@ class Store(SQLiteBackend):
         conn.execute("BEGIN IMMEDIATE")
         try:
             yield self
-            self._commit()
+            conn.commit()
+            self._journal_flush()
         except Exception:
             conn.rollback()
+            self._journal_buffer.clear()
             raise
         finally:
             self._in_transaction = False
@@ -101,6 +126,7 @@ class Store(SQLiteBackend):
             conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
 
         self._commit()
+        self._journal_emit({"op": "set", "key": key, "value": value})
         return existing is None
 
     def get(self, key: str) -> Any | None:
@@ -125,7 +151,10 @@ class Store(SQLiteBackend):
         cur = conn.execute("DELETE FROM kv WHERE key = ?", (key,))
         conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
         self._commit()
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+        if deleted:
+            self._journal_emit({"op": "delete", "key": key})
+        return deleted
 
     def exists(self, key: str) -> bool:
         """Check if key exists (and is not expired)."""
@@ -168,6 +197,7 @@ class Store(SQLiteBackend):
             (key, expires_str),
         )
         self._commit()
+        self._journal_emit({"op": "expire", "key": key})
         return True
 
     def incr(self, key: str, amount: int = 1) -> int:
@@ -203,6 +233,7 @@ class Store(SQLiteBackend):
                 """,
                 (key, value_json, value_type, key, now, now),
             )
+            self._journal_emit({"op": "set", "key": key, "value": value})
         self._commit()
 
     def mget(self, keys: list[str]) -> list[Any | None]:
