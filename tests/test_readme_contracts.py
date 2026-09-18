@@ -10,6 +10,7 @@ def test_store_tour():
     s.set("session_token", "xyz-123", ttl=3600)
     s.mset({"counter": 0, "status": "active"})
     assert s.incr("counter", 1) == 1
+    s.close()
 
 
 def test_state_machine_tour():
@@ -19,6 +20,7 @@ def test_state_machine_tour():
     sm.set_state("idle")
     assert sm.send("start_job") is True
     assert sm.current_state == "processing"
+    sm.close()
 
 
 def test_saga_tour():
@@ -55,6 +57,7 @@ def test_event_stream_tour():
     es.set_cursor("c1", es.read(topic="user_signups")[1])
     events, _ = es.read(topic="user_signups", limit=50)
     assert events[0].payload == {"user_id": 42}
+    es.close()
 
 
 def test_event_bus_tour():
