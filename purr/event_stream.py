@@ -160,6 +160,16 @@ class EventStream(SQLiteBackend):
         conn.execute("DELETE FROM cursors")
         conn.commit()
 
+    def maintain(self) -> dict[str, Any]:
+        """Host-driven maintenance: checkpoint, verify. Never prunes replay log."""
+        report: dict[str, Any] = {
+            "events": self.count(),
+            "checkpoint": self.checkpoint(),
+            "integrity": self.integrity(),
+        }
+        report.update(self.db_stats())
+        return report
+
     def _row_to_event(self, row: sqlite3.Row) -> Event:
         """Convert a database row to an Event."""
         return Event(

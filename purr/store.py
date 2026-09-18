@@ -209,3 +209,15 @@ class Store(SQLiteBackend):
         """Return number of keys."""
         conn = self._get_conn()
         return conn.execute("SELECT COUNT(*) FROM kv").fetchone()[0]
+
+    def maintain(self) -> dict[str, Any]:
+        """Host-driven maintenance: sweep, checkpoint, verify. Returns report."""
+        swept = self.sweep()
+        report: dict[str, Any] = {
+            "swept": swept,
+            "keys": self.size(),
+            "checkpoint": self.checkpoint(),
+            "integrity": self.integrity(),
+        }
+        report.update(self.db_stats())
+        return report

@@ -236,6 +236,17 @@ class StateMachine(SQLiteBackend):
         conn.commit()
         return cur.rowcount
 
+    def maintain(self, keep: int = 10) -> dict[str, Any]:
+        """Host-driven maintenance: prune, checkpoint, verify. Returns report."""
+        report: dict[str, Any] = {
+            "pruned": self.prune_snapshots(keep),
+            "state": self.current_state,
+            "checkpoint": self.checkpoint(),
+            "integrity": self.integrity(),
+        }
+        report.update(self.db_stats())
+        return report
+
     def _load_state(self) -> None:
         conn = self._get_conn()
         row = conn.execute("SELECT * FROM state_machines WHERE name = ?", (self.name,)).fetchone()

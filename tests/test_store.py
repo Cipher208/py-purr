@@ -124,6 +124,15 @@ class TestStoreSweep:
         assert store.size() == 1
         assert store.get("fresh") == 1
 
+    def test_maintain_reports(self, store):
+        store.set("fresh", 1, ttl=60)
+        store.set("dead", 2, ttl=-10)
+        report = store.maintain()
+        assert report["swept"] == 1
+        assert report["keys"] == 1
+        assert report["integrity"] == "ok"
+        assert report["db_bytes"] > 0
+
 
 class TestStoreAtomic:
     def test_mset(self, store):
