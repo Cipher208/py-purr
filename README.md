@@ -165,7 +165,7 @@ asyncio.run(pipeline.execute(event, handle_alert))
 
 ## 🛠️ Development & Testing
 
-Run the full test suite (44 tests):
+Run the full test suite (67 tests):
 
 ```bash
 uv run --with pytest --with pytest-asyncio pytest -v
