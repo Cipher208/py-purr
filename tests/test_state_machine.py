@@ -99,3 +99,11 @@ class TestStateMachinePersistence:
 
         sm.restore_snapshot()
         assert sm.current_state == "active"
+
+    def test_prune_snapshots_keeps_newest(self, sm):
+        sm.set_state("idle")
+        for _ in range(5):
+            sm.snapshot()
+        assert len(sm.get_snapshots()) == 5
+        assert sm.prune_snapshots(keep=2) == 3
+        assert len(sm.get_snapshots()) == 2

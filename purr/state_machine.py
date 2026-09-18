@@ -229,6 +229,20 @@ class StateMachine:
             for row in rows
         ]
 
+    def prune_snapshots(self, keep: int = 10) -> int:
+        """Delete snapshots beyond the newest keep. Returns removed count."""
+        conn = self._get_conn()
+        cur = conn.execute(
+            """
+            DELETE FROM state_snapshots WHERE machine_name = ? AND id NOT IN (
+                SELECT id FROM state_snapshots WHERE machine_name = ? ORDER BY id DESC LIMIT ?
+            )
+            """,
+            (self.name, self.name, keep),
+        )
+        conn.commit()
+        return cur.rowcount
+
     def _load_state(self) -> None:
         conn = self._get_conn()
         row = conn.execute("SELECT * FROM state_machines WHERE name = ?", (self.name,)).fetchone()
