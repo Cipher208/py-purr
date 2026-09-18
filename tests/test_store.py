@@ -24,6 +24,10 @@ class TestStoreBasic:
         assert store.delete("key") is True
         assert store.get("key") is None
 
+    def test_delete_missing_returns_false(self, store):
+        store.set("key", "value")
+        assert store.delete("ghost") is False
+
     def test_exists(self, store):
         store.set("key", "value")
         assert store.exists("key") is True

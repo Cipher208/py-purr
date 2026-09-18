@@ -100,10 +100,10 @@ class Store:
     def delete(self, key: str) -> bool:
         """Delete a key. Returns True if key existed."""
         conn = self._get_conn()
-        conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+        cur = conn.execute("DELETE FROM kv WHERE key = ?", (key,))
         conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
         conn.commit()
-        return conn.total_changes > 0
+        return cur.rowcount > 0
 
     def exists(self, key: str) -> bool:
         """Check if key exists (and is not expired)."""
