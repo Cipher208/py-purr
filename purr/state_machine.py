@@ -6,16 +6,15 @@ Removed project-specific states, kept core FSM functionality.
 
 from __future__ import annotations
 
-import contextlib
 import json
-import sqlite3
-import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+from .backend import SQLiteBackend
 
 
 class State(BaseModel):
@@ -37,7 +36,7 @@ class Transition(BaseModel):
     action: Callable[[State, dict[str, Any]], dict[str, Any]] | None = None
 
 
-class StateMachine:
+class StateMachine(SQLiteBackend):
     """Finite state machine with SQLite WAL persistence.
 
     Instance isolation contract: each instance holds its own connection and
@@ -59,24 +58,13 @@ class StateMachine:
         db_path: str | Path = "state.db",
     ) -> None:
         self.name = name
-        self._db_path = Path(db_path)
-        self._local = threading.local()
+        super().__init__(db_path)
         self._transitions: list[Transition] = []
         self._on_enter: dict[str, Callable[[State], None]] = {}
         self._on_exit: dict[str, Callable[[State], None]] = {}
         self._current: State | None = None
         self._init_db()
         self._load_state()
-
-    def _get_conn(self) -> sqlite3.Connection:
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(str(self._db_path))
-            self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA synchronous=NORMAL")
-            # Explicit writer-wait contract: do not rely on the driver default.
-            self._local.conn.execute("PRAGMA busy_timeout=5000")
-            self._local.conn.row_factory = sqlite3.Row
-        return self._local.conn
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -275,10 +263,3 @@ class StateMachine:
             ),
         )
         conn.commit()
-
-    def close(self) -> None:
-        """Close the connection for this thread."""
-        if hasattr(self._local, "conn") and self._local.conn is not None:
-            with contextlib.suppress(Exception):
-                self._local.conn.close()
-            self._local.conn = None

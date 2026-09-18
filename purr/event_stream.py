@@ -10,18 +10,17 @@ Like Redis Streams but on SQLite. Supports:
 
 from __future__ import annotations
 
-import contextlib
 import json
 import sqlite3
-import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .backend import SQLiteBackend
 from .event import Event, EventType
 
 
-class EventStream:
+class EventStream(SQLiteBackend):
     """Persistent event stream with cursors.
 
     Instance isolation contract: each instance holds its own connection.
@@ -29,19 +28,7 @@ class EventStream:
     """
 
     def __init__(self, db_path: str | Path = "events.db") -> None:
-        self._db_path = Path(db_path)
-        self._local = threading.local()
-        self._init_db()
-
-    def _get_conn(self) -> sqlite3.Connection:
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(str(self._db_path))
-            self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA synchronous=NORMAL")
-            # Explicit writer-wait contract: do not rely on the driver default.
-            self._local.conn.execute("PRAGMA busy_timeout=5000")
-            self._local.conn.row_factory = sqlite3.Row
-        return self._local.conn
+        super().__init__(db_path)
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -171,13 +158,6 @@ class EventStream:
         conn.execute("DELETE FROM events")
         conn.execute("DELETE FROM cursors")
         conn.commit()
-
-    def close(self) -> None:
-        """Close the connection for this thread."""
-        if hasattr(self._local, "conn") and self._local.conn is not None:
-            with contextlib.suppress(Exception):
-                self._local.conn.close()
-            self._local.conn = None
 
     def _row_to_event(self, row: sqlite3.Row) -> Event:
         """Convert a database row to an Event."""
