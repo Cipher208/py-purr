@@ -4,7 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "py-purr"
-version = "0.1.0"
+# The version lives in exactly one place — `purr/__init__.py` — and is read
+# from there. Two copies would eventually disagree, and the disagreement would
+# surface as a wheel whose metadata says one thing while `purr.__version__`
+# says another.
+dynamic = ["version"]
 description = "Zero-infrastructure SQLite-backed alternative to Redis: KV with TTL, state machines, sagas, event streams and pub/sub."
 readme = "README.md"
 license = "MIT"
@@ -40,6 +44,9 @@ Homepage = "https://github.com/Cipher208/py-purr"
 Repository = "https://github.com/Cipher208/py-purr"
 Issues = "https://github.com/Cipher208/py-purr/issues"
 Changelog = "https://github.com/Cipher208/py-purr/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "purr/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 # The distribution is named `py-purr` — the name `purr` on PyPI belongs to an

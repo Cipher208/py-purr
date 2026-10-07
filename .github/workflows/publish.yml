@@ -1,0 +1,96 @@
+name: Publish to PyPI
+
+# This workflow does not run on a push. It fires only when a GitHub Release is
+# published, and it authenticates with OIDC against a Trusted Publisher — there
+# is no API token stored in this repository, so there is nothing here to steal.
+#
+# One-time setup on PyPI before the first release:
+#   https://pypi.org/manage/account/publishing/
+#     Owner:            Cipher208
+#     Repository:       py-purr
+#     Workflow name:    publish.yml
+#     Environment:      pypi
+#
+# A published version can never be removed from PyPI, only yanked, so this
+# workflow refuses to publish unless the git tag and the version in
+# `pyproject.toml` agree exactly.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type publish to confirm — this is irreversible on PyPI'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Refuse a manual run without confirmation
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ inputs.confirm }}" != "publish" ]; then
+            echo "::error::Confirmation input did not say 'publish'. Stopping."
+            exit 1
+          fi
+
+      - name: Check the tag matches the version in purr/__init__.py
+        if: github.event_name == 'release'
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          # The single source of truth — hatchling reads this same line when it
+          # builds, so this comparison is against what will actually upload.
+          VERSION=$(python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('purr/__init__.py').read_text()).group(1))")
+          echo "tag: $TAG | purr.__version__: $VERSION"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $VERSION in purr/__init__.py"
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Check the wheel imports as `purr`
+        run: |
+          python -m venv /tmp/check
+          /tmp/check/bin/python -m pip install dist/*.whl
+          /tmp/check/bin/python -c "import purr; from purr import Store; print('import ok', purr.__version__)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # An environment can be given required reviewers in repository settings;
+    # naming one here is what makes that possible.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/py-purr
+    permissions:
+      # The OIDC token that PyPI exchanges for a short-lived upload credential.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

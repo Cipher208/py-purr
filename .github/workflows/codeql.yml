@@ -1,0 +1,52 @@
+name: CodeQL
+
+# Static analysis for security bugs. Free on a public repository and
+# unavailable on a private one without GitHub Advanced Security — so, like the
+# Pages deploy in other projects of mine, this is gated on visibility rather
+# than left to fail with a red X on every push. The day this repository becomes
+# public it starts working with no edit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so a newly published CodeQL query finds old code too.
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze python
+    if: github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      # Only what the analysis needs: read the code, write the findings. No
+      # write access to contents — this job never modifies the repository.
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          language: python
+          # `security-extended` is the stricter query set. PURR reads values
+          # out of a database file and re-emits them, so the injection and
+          # unsafe-deserialization queries are the reason this workflow exists.
+          queries: security-extended
+
+      # No build step: CodeQL analyses Python from source.
+
+      - name: Perform analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:python"

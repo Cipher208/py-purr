@@ -46,6 +46,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### CI
 - `ruff check` + `ruff format --check` + coverage gate (`--fail-under=85`).
 - Test matrix extended to Python 3.11/3.12/3.13.
+- New `package` job: builds the sdist and wheel, installs the wheel into an
+  empty environment and imports it. The test matrix imports `purr` from the
+  source tree, so it would not notice a broken wheel.
+- New CodeQL workflow (`security-extended`), gated on repository visibility.
+- New publish workflow for PyPI via Trusted Publisher (no token in the repo),
+  which refuses to publish unless the git tag matches the version in
+  `purr/__init__.py`.
+- `concurrency` cancel-in-progress, and workflow action versions updated
+  (`checkout@v7`, `setup-python@v7`, `codeql-action@v4`).
 
 ### Packaging
 - **Distribution renamed to `py-purr`.** The name `purr` on PyPI already belongs
@@ -53,6 +62,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   library. The **import is unchanged**: `from purr import Store`.
 - `pyproject.toml` filled in for a public release: `authors`, `keywords`,
   `classifiers`, `[project.urls]`, and an explicit `packages = ["purr"]`.
+- Version is now dynamic, read from `purr/__init__.py`, so the wheel metadata
+  and `purr.__version__` cannot drift apart.
 - README install line, CI badge and clone instructions updated to the new
   repository name.
 

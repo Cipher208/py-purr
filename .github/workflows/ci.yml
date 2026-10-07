@@ -2,31 +2,77 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
+
+# A push to a branch while a PR is open used to leave two runs racing. Cancel
+# the older one instead of paying for both.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev]"
-    - name: Lint
-      run: |
-        ruff check purr tests
-        ruff format --check purr tests
-    - name: Tests with coverage gate
-      run: |
-        pytest --cov=purr --cov-report=term-missing --cov-fail-under=85
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: |
+          ruff check purr tests
+          ruff format --check purr tests
+
+      - name: Tests with coverage gate
+        run: |
+          pytest --cov=purr --cov-report=term-missing --cov-fail-under=85
+
+  # Packaging is checked separately because a broken build is invisible to the
+  # test matrix: the tests import `purr` from the source tree, which is exactly
+  # what a broken wheel would not provide.
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install build backend
+        run: python -m pip install --upgrade pip build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Install the wheel into an empty environment
+        run: |
+          python -m venv /tmp/check
+          /tmp/check/bin/python -m pip install dist/*.whl
+          # Installed under the distribution name `py-purr`, imported as `purr`.
+          /tmp/check/bin/python -c "import purr; from purr import Store, StateMachine, Saga, EventStream, EventBus; print('import ok', purr.__version__)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
