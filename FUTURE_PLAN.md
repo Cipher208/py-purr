@@ -1,23 +1,23 @@
 # PURR — Future Plan
 
-> **Статус:** Draft
-> **Дата:** 2026-07-24
-> **Визия:** Полноценная Redis-подобная СУБД на SQLite
+> **Status:** Draft
+> **Date:** 2026-07-24
+> **Vision:** A full Redis-like database engine on SQLite
 
 ---
 
-## 1. Текущее состояние (v0.1.0)
+## 1. Current State (v0.1.0)
 
 ### Working
-- **Store** — thread-safe KV с SQLite WAL, TTL, atomic writes
-- **StateMachine** — FSM с persistence, snapshots, guards, actions
+- **Store** — thread-safe KV with SQLite WAL, TTL, atomic writes
+- **StateMachine** — FSM with persistence, snapshots, guards, actions
 - **Saga** — compensating transactions
 - **EventBus** — pub/sub
-- **EventStream** — persistent event store с cursors (Redis Streams-like)
+- **EventStream** — persistent event store with cursors (Redis Streams-like)
 - **EventVersioner** — event schema migration
 - **HealthChecker** — component health monitoring
 - **Middleware** — pipeline (logging, rate limit, dedup, filter, transform)
-- **Retry** — exponential backoff с jitter
+- **Retry** — exponential backoff with jitter
 - **Tests** — 44/44 passed
 
 ### Stats
@@ -32,7 +32,7 @@
 
 ### Phase 1: Data Structures (Redis-like)
 
-Добавить основные Redis data structures поверх Store.
+Add the core Redis data structures on top of Store.
 
 | Feature | Redis Commands | Priority |
 |---|---|---|
@@ -145,7 +145,7 @@ class SetStore:
 
 ### Phase 2: Transactions
 
-Добавить транзакции как в Redis (MULTI/EXEC).
+Add transactions as in Redis (MULTI/EXEC).
 
 | Feature | Redis Commands | Priority |
 |---|---|---|
@@ -192,13 +192,13 @@ class Transaction:
 
 ### Phase 3: Networking
 
-Добавить серверную часть для удалённого доступа.
+Add the server side for remote access.
 
 | Feature | Description | Priority |
 |---|---|---|
-| **TCP Server** | Redis-совместимый протокол | P1 |
-| **HTTP API** | REST API для CRUD | P1 |
-| **WebSocket** | Pub/Sub через WebSocket | P2 |
+| **TCP Server** | Redis-compatible protocol | P1 |
+| **HTTP API** | REST API for CRUD | P1 |
+| **WebSocket** | Pub/Sub over WebSocket | P2 |
 | **Redis Protocol** | RESP (Redis Serialization Protocol) | P1 |
 
 #### TCP Server
@@ -269,7 +269,7 @@ class PurrHTTP:
 
 | Feature | Description | Priority |
 |---|---|---|
-| **Pub/Sub** | Real-time pub/sub через streams | P1 |
+| **Pub/Sub** | Real-time pub/sub over streams | P1 |
 | **Cluster** | Multi-node replication | P2 |
 | **Persistence** | RDB snapshots + AOF | P1 |
 | **Eviction** | LRU/LFU eviction policies | P2 |
@@ -312,12 +312,12 @@ class PubSub:
 
 | Feature | Description | Priority |
 |---|---|---|
-| **CLI** | Command-line интерфейс | P0 |
-| **Client Library** | Python client для удалённого доступа | P1 |
+| **CLI** | Command-line interface | P0 |
+| **Client Library** | Python client for remote access | P1 |
 | **Docker** | Docker image | P1 |
 | **Benchmarking** | Performance tests | P2 |
 | **Metrics** | Reads/sec, TTL hits, DB size tracking | P1 |
-| **Documentation** | Полная документация API | P0 |
+| **Documentation** | Complete API documentation | P0 |
 
 #### CLI
 ```bash
@@ -353,13 +353,13 @@ db0:keys=42,expires=10,avg_ttl=3600
 
 ---
 
-## 3. Advanced Ideas (from redis.md)
+## 3. Advanced Ideas
 
-Дополнительные идеи для развития PURR beyond basic Redis compatibility.
+Further ideas for developing PURR beyond basic Redis compatibility.
 
 ### 3.1 Key Versioning (Point-in-Time Recovery)
 
-Каждая SET пишет новую версию в историю. GET без параметров — последняя. GET с `?version=N` — конкретная.
+Every SET writes a new version to the history. A GET without parameters returns the latest; a GET with `?version=N` returns that specific one.
 
 ```python
 # purr/versioned_store.py
@@ -386,11 +386,11 @@ class VersionedStore(Store):
         """Restore key to specific version."""
 ```
 
-**Преимущества над Redis:** Point-in-time recovery из коробки. Ни один Redis так не умеет.
+**Advantages over Redis:** Point-in-time recovery out of the box. No Redis does this.
 
-### 3.2 Lazy TTL (ленивая экспирация)
+### 3.2 Lazy TTL
 
-Не сканировать всю базу каждую секунду — чистить при GET/SET.
+Do not scan the whole database every second — expire on GET/SET.
 
 ```python
 # purr/lazy_ttl.py
@@ -411,9 +411,9 @@ class LazyTTL:
         # Return count deleted
 ```
 
-### 3.3 Write Queue (конкурентная запись)
+### 3.3 Write Queue
 
-SQLite не терпит конкурентной записи. Нужна очередь.
+SQLite does not tolerate concurrent writes. A queue is needed.
 
 ```python
 # purr/write_queue.py
@@ -439,9 +439,9 @@ class WriteQueue:
             self._queue.task_done()
 ```
 
-### 3.4 FTS5 (полнотекстовый поиск)
+### 3.4 FTS5 (full-text search)
 
-SQLite FTS5 для индексации ключей и значений.
+SQLite FTS5 for indexing keys and values.
 
 ```python
 # purr/fts.py
@@ -469,7 +469,7 @@ class FTSIndex:
 
 ### 3.5 Hybrid Pub/Sub
 
-In-process очередь для локальных подписчиков + SQLite events для внешних.
+An in-process queue for local subscribers + SQLite events for external ones.
 
 ```python
 # purr/hybrid_pubsub.py
@@ -504,7 +504,7 @@ class HybridPubSub:
 
 ### 3.6 Replication (WAL Log Shipping)
 
-Мастер шлёт WAL-логи, слейвы применяют диффы.
+The master ships WAL logs; the replicas apply the diffs.
 
 ```python
 # purr/replication.py
@@ -528,7 +528,7 @@ class ReplicationManager:
 
 ### 3.7 Sharding (hash-based partitioning)
 
-Каждая партиция в отдельном SQLite-файле.
+Each partition in its own SQLite file.
 
 ```python
 # purr/sharded_store.py
@@ -554,7 +554,7 @@ class ShardedStore:
 
 ### 3.8 In-Memory LRU Cache
 
-SQLite для persistence, LRU слой для скорости.
+SQLite for persistence, an LRU layer for speed.
 
 ```python
 # purr/cache.py
@@ -682,9 +682,9 @@ class Metrics:
 
 ### 3.11 Embedded Use Case
 
-PURR как embedded хранилище для mobile/embedded систем.
+PURR as an embedded store for mobile and embedded systems.
 
-**Преимущества:**
+**Advantages:**
 - Single file (.db)
 - No daemons
 - No ports
@@ -700,7 +700,7 @@ PURR как embedded хранилище для mobile/embedded систем.
 
 ### 3.12 Dual Mode (StateMachine + KV)
 
-Один пакет — два режима работы (из statebus-spec.md):
+One package, two modes of operation:
 
 ```python
 from purr import Store, StateMachine
@@ -722,7 +722,7 @@ snap = sm.get_snapshot()
 
 ### 3.13 Python SDK
 
-Чистый API для两种 режимов:
+A clean API for both modes:
 
 ```python
 # purr/client.py
@@ -748,17 +748,17 @@ class PurrClient:
 ### 3.14 CLI Tools
 
 ```
-purr serve --port 6379          # Redis-совместимый протокол (RESP)
+purr serve --port 6379          # Redis-compatible protocol (RESP)
 purr serve --http --port 8080   # HTTP API
-purr inspect data/purr.db       # Показать содержимое
-purr stats data/purr.db         # Статистика: чтений/записей, размер WAL
-purr dump data/purr.db          # Дамп в JSON
-purr vacuum data/purr.db        # VACUUM + восстановление размера
+purr inspect data/purr.db       # Show the contents
+purr stats data/purr.db         # Stats: reads/writes, WAL size
+purr dump data/purr.db          # Dump to JSON
+purr vacuum data/purr.db        # VACUUM + reclaim disk space
 ```
 
 ### 3.15 Auto-VACUUM
 
-SQLite без VACUUM растёт. Автоматический VACUUM при превышении порога:
+SQLite grows without VACUUM. Automatic VACUUM above a threshold:
 
 ```python
 # purr/vacuum.py
@@ -783,51 +783,51 @@ class AutoVacuum:
 
 ### 3.16 Positioning
 
-**Месседж первой строки:**
+**One-line pitch:**
 
-> **PURR — SQLite, который отвечает как Redis. Одна библиотека — три модуля: Store, StateMachine, EventBus.**
+> **PURR — SQLite that answers like Redis. One library, three modules: Store, StateMachine, EventBus.**
 
-**УТП:**
-1. Zero dependency — `pip install purr` и готово
-2. Три модуля в одном пакете — KV + FSM + Events
-3. SQLite WAL — данные не теряются
-4. EventBus middleware — RateLimit, Dedup, Transform из коробки
-5. Atomic write — temp file + rename, ни одного битого файла
+**USP:**
+1. Zero dependencies — `pip install py-purr` and you are done
+2. Three modules in one package — KV + FSM + Events
+3. SQLite WAL — data survives crashes
+4. EventBus middleware — RateLimit, Dedup, Transform out of the box
+5. Atomic writes — temp file + rename, never a torn file
 
-**Кому нужно:**
-- Разработчикам агентов — внутреннее состояние (настроение, энергия)
-- Backend-разработчикам — замена Redis для маленьких проектов
-- Хобби-проектам на VPS — каждая зависимость считается
-- Dev-средам — не хочется поднимать Redis для тестов
+**Who needs it:**
+- Agent developers — internal state (mood, energy)
+- Backend developers — a Redis replacement for small projects
+- Hobby projects on a VPS — every dependency counts
+- Dev environments — you do not want to run Redis just for tests
 
 ### 3.17 Competitive Analysis
 
-| Решение | StateMachine | KV Store | EventBus | SQLite |
+| Solution | StateMachine | KV Store | EventBus | SQLite |
 |---------|:---:|:---:|:---:|:---:|
 | **PURR** | ✅ | ✅ | ✅ | ✅ |
-| `redis` | ❌ | ✅ (родной) | ❌ | ❌ |
+| `redis` | ❌ | ✅ (native) | ❌ | ❌ |
 | `sqlite-redis` | ❌ | Partial | ❌ | ✅ |
-| `pickle + файл` | ⚠️ самописно | ❌ | ❌ | ❌ |
+| `pickle + file` | ⚠️ hand-rolled | ❌ | ❌ | ❌ |
 
-**PURR — единственный, кто даёт и StateMachine, и KV, и EventBus — на чистом SQLite, без сервера.**
+**PURR is the only one that gives you StateMachine, KV and EventBus — on plain SQLite, with no server.**
 
-### 3.18 Key Decisions (из spec)
+### 3.18 Key Decisions
 
-- **WAL обязателен**: `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`
-- **Sync API — фича**: для маленьких операций асинхронность — оверхед
-- **VACUUM автоматический**: при превышении порога (50% dead data)
-- **RESP не обязательно в v1**: начать с HTTP + Python SDK
+- **WAL is mandatory**: `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`
+- **A sync API is a feature**: for small operations, async is overhead
+- **VACUUM is automatic**: above a threshold (50% dead data)
+- **RESP is not required in v1**: start with HTTP + the Python SDK
 
 ### 3.19 Launch Strategy
 
-- **PyPI**: `pip install purr`
+- **PyPI**: `pip install py-purr`
 - **Hacker News**: "I replaced Redis with a SQLite file — here's the library"
-- **GitHub**: README с бейджами и release notes
-- **Документация**: MkDocs или аналог
+- **GitHub**: a README with badges and release notes
+- **Documentation**: MkDocs or equivalent
 
-### 3.20 Streams with Consumer Groups (из sqredis_ARCH.md)
+### 3.20 Streams with Consumer Groups
 
-Расширенные streams с consumer groups для балансировки нагрузки.
+Extended streams with consumer groups for load balancing.
 
 ```sql
 CREATE TABLE IF NOT EXISTS streams (
@@ -866,17 +866,17 @@ CREATE TABLE IF NOT EXISTS consumer_group_members (
 );
 ```
 
-**Операции:**
-- `XADD(stream, data)` — добавить запись
-- `XREAD(stream, from_id, count)` — чтение с позиции
-- `XREADGROUP(group, consumer, count)` — чтение с балансировкой
-- `XACK(group, consumer, entry_id)` — подтверждение
-- `XTRIM(stream, maxlen)` — усечение
-- `XDEL(stream, entry_id)` — удаление одной записи
+**Operations:**
+- `XADD(stream, data)` — append an entry
+- `XREAD(stream, from_id, count)` — read from a position
+- `XREADGROUP(group, consumer, count)` — balanced read
+- `XACK(group, consumer, entry_id)` — acknowledge
+- `XTRIM(stream, maxlen)` — trim
+- `XDEL(stream, entry_id)` — delete one entry
 
-### 3.21 Saga with SQL Savepoints (из sqredis_ARCH.md)
+### 3.21 Saga with SQL Savepoints
 
-Саги с настоящим откатом через SQLite savepoints.
+Sagas with real rollback through SQLite savepoints.
 
 ```sql
 CREATE TABLE IF NOT EXISTS sagas (
@@ -899,31 +899,31 @@ CREATE TABLE IF NOT EXISTS saga_steps (
 );
 ```
 
-**Схема работы:**
+**How it works:**
 ```sql
 BEGIN;
-    INSERT INTO kv_store ...;      -- Шаг 1
-    INSERT INTO stream_entries ...; -- Шаг 2
-    INSERT INTO pubsub_messages ...; -- Шаг 3
+    INSERT INTO kv_store ...;      -- Step 1
+    INSERT INTO stream_entries ...; -- Step 2
+    INSERT INTO pubsub_messages ...; -- Step 3
 COMMIT;
--- Если COMMIT не удался — всё откатилось на уровне SQLite
--- Если бизнес-логика упала ПОСЛЕ COMMITа — запуск компенсации
+-- If COMMIT failed, everything rolled back at the SQLite level
+-- If business logic failed AFTER the COMMIT, run the compensation
 ```
 
-### 3.22 Extended Middleware (из sqredis_ARCH.md)
+### 3.22 Extended Middleware
 
-6 встроенных middleware (у нас 5, добавляем Validate и Metrics):
+Six built-in middleware (we have five; adding Validate and Metrics):
 
-| Middleware | Назначение | Конфиг |
+| Middleware | Purpose | Config |
 |---|---|---|
-| RateLimit | N событий за окно | RateLimit(count, window_seconds) |
-| Dedup | Дедупликация по хешу | Dedup(hash_fields, window_seconds) |
-| Transform | Обогащение (timestamp, source) | Transform(enrichers...) |
-| Logging | Аудит | Logging(output, level) |
-| **Validate** | **Валидация схемы** | **Validate(json_schema)** |
-| **Metrics** | **Сбор метрик** | **Metrics(prometheus_registry)** |
+| RateLimit | N events per window | RateLimit(count, window_seconds) |
+| Dedup | Deduplicate by hash | Dedup(hash_fields, window_seconds) |
+| Transform | Enrichment (timestamp, source) | Transform(enrichers...) |
+| Logging | Audit trail | Logging(output, level) |
+| **Validate** | **Schema validation** | **Validate(json_schema)** |
+| **Metrics** | **Metrics collection** | **Metrics(prometheus_registry)** |
 
-### 3.23 REST API Spec (из sqredis_ARCH.md)
+### 3.23 REST API Spec
 
 ```
 GET    /kv/:key              — GET
@@ -947,34 +947,34 @@ POST   /saga/:id/compensate  — Compensate
 GET    /saga/:id             — Status
 
 GET    /health               — Health check
-GET    /stats                — Статистика
+GET    /stats                — Stats
 ```
 
-### 3.24 MCP Integration (из sqredis_ARCH.md)
+### 3.24 MCP Integration
 
-Тулы для интеграции с AI-агентами:
+Tools for integration with AI agents:
 
 ```python
 # MCP tools
-sqredis_set(key, value, ttl=None)       # SET
-sqredis_get(key)                        # GET
-sqredis_del(key)                        # DEL
-sqredis_keys(pattern)                   # LIKE-поиск
+purr_set(key, value, ttl=None)       # SET
+purr_get(key)                        # GET
+purr_del(key)                        # DEL
+purr_keys(pattern)                   # LIKE search
 
-sqredis_publish(channel, payload)       # PUBLISH
-sqredis_subscribe(channel)              # SUBSCRIBE
+purr_publish(channel, payload)       # PUBLISH
+purr_subscribe(channel)              # SUBSCRIBE
 
-sqredis_stream_add(stream, data)        # XADD
-sqredis_stream_read(stream, from_id)    # XREAD
+purr_stream_add(stream, data)        # XADD
+purr_stream_read(stream, from_id)    # XREAD
 
-sqredis_saga_begin()                    # BEGIN SAGA
-sqredis_saga_step(saga_id, type, data)  # ADD STEP
-sqredis_saga_execute(saga_id)           # EXECUTE
+purr_saga_begin()                    # BEGIN SAGA
+purr_saga_step(saga_id, type, data)  # ADD STEP
+purr_saga_execute(saga_id)           # EXECUTE
 ```
 
-### 3.25 TTL Daemon (из sqredis_ARCH.md)
+### 3.25 TTL Daemon
 
-Фоновая горутина для очистки истёкших данных:
+A background goroutine that clears expired data:
 
 ```python
 # purr/ttl_daemon.py
@@ -1004,38 +1004,38 @@ class TTLDaemon:
         self._running = False
 ```
 
-### 3.26 Limitations (из sqredis_ARCH.md)
+### 3.26 Limitations
 
-Честная оценка ограничений:
+An honest assessment of the limits:
 
-| Ограничение | Описание | Решение |
+| Limitation | Description | Mitigation |
 |---|---|---|
-| **Не для распределённых систем** | PURR живёт на одной машине | Кластер в будущем |
-| **WAL растёт** | Нужна периодическая checkpoint | Auto-VACUUM |
-| **Не in-memory** | Для high-frequency кэшей Redis быстрее | LRU cache layer |
-| **SQLite single writer** | Конкурентная запись — узкое место | Write queue |
+| **Not for distributed systems** | PURR lives on one machine | Clustering in the future |
+| **WAL grows** | Needs periodic checkpointing | Auto-VACUUM |
+| **Not in-memory** | Redis is faster for high-frequency caches | LRU cache layer |
+| **SQLite single writer** | Concurrent writes are the bottleneck | Write queue |
 
-### 3.27 Three-Layer Architecture (из PURR_SPEC.md)
+### 3.27 Three-Layer Architecture
 
-Три слоя реактивности, надевающиеся друг на друга:
+Three layers of reactivity, stacked on top of one another:
 
 ```
 Layer 3: Stream (Windowed Aggregation)
-  ↓ использует
+  ↓ uses
 Layer 2: EventBus (pub/sub + middleware)
-  ↓ использует
+  ↓ uses
 Layer 1: Core (SSoT + Delta)
 ```
 
-**Принципы:**
-1. **Zero-dep core** — базовая стейт-машина без внешних зависимостей
-2. **Layered, not coupled** — EventBus использует Core, но Core ничего не знает об EventBus
-3. **Deterministic replay** — все изменения состояния = события, лог воспроизводит состояние
-4. **Fail-fast validation** — дельта с невалидным полем = ошибка, не тихий дроп
+**Principles:**
+1. **Zero-dep core** — the base state machine with no external dependencies
+2. **Layered, not coupled** — EventBus uses Core, but Core knows nothing about EventBus
+3. **Deterministic replay** — every state change is an event; the log reproduces the state
+4. **Fail-fast validation** — a delta with an invalid field is an error, not a silent drop
 
-### 3.28 Field Registration (из PURR_SPEC.md)
+### 3.28 Field Registration
 
-Регистрация полей с типами и валидаторами:
+Registering fields with types and validators:
 
 ```python
 # purr/field_registry.py
@@ -1069,14 +1069,14 @@ class FieldRegistry:
         return True
 ```
 
-### 3.29 Wildcard Trie (из PURR_SPEC.md)
+### 3.29 Wildcard Trie
 
-Topic matching с wildcard'ами:
+Topic matching with wildcards:
 
 ```
-"state.energy"        — точное совпадение
-"state.*"             — одноуровневый wildcard
-"state.**"            — многоуровневый
+"state.energy"        — exact match
+"state.*"             — single-level wildcard
+"state.**"            — multi-level
 "#"                   — catch-all
 ```
 
@@ -1119,9 +1119,9 @@ class TopicTrie:
         return results
 ```
 
-### 3.30 Outbox Pattern (из PURR_SPEC.md)
+### 3.30 Outbox Pattern
 
-События пишутся в outbox перед отправкой подписчикам:
+Events are written to an outbox before being delivered to subscribers:
 
 ```python
 # purr/outbox.py
@@ -1172,9 +1172,9 @@ class Outbox:
         return [dict(row) for row in rows]
 ```
 
-### 3.31 Dead Letter Queue (из PURR_SPEC.md)
+### 3.31 Dead Letter Queue
 
-События, не доставленные после N retry:
+Events not delivered after N retries:
 
 ```python
 # purr/dlq.py
@@ -1229,9 +1229,9 @@ class DeadLetterQueue:
         return dict(row)
 ```
 
-### 3.32 Stream Windows (из PURR_SPEC.md)
+### 3.32 Stream Windows
 
-Оконная агрегация событий:
+Windowed aggregation of events:
 
 ```python
 # purr/windows.py
@@ -1239,9 +1239,9 @@ from enum import Enum
 from typing import Callable
 
 class WindowType(Enum):
-    TUMBLING = "tumbling"    # фиксированный размер, без перекрытия
-    SLIDING = "sliding"      # фиксированный размер, с перекрытием
-    SESSION = "session"      # по зазору бездействия
+    TUMBLING = "tumbling"    # fixed size, no overlap
+    SLIDING = "sliding"      # fixed size, with overlap
+    SESSION = "session"      # by inactivity gap
 
 class WindowSpec:
     topic: str
@@ -1279,7 +1279,7 @@ class StreamWindow:
         return False
 ```
 
-### 3.33 Built-in Aggregations (из PURR_SPEC.md)
+### 3.33 Built-in Aggregations
 
 ```python
 # purr/aggregations.py
@@ -1327,7 +1327,7 @@ def aggregate_topk(field: str, k: int) -> Callable:
     return agg
 ```
 
-### 3.34 Metrics Export (из PURR_SPEC.md)
+### 3.34 Metrics Export
 
 ```python
 # purr/metrics_export.py
@@ -1369,7 +1369,7 @@ class PrometheusExporter(MetricsExporter):
         return "\n".join(lines)
 ```
 
-### 3.35 Graceful Shutdown (из PURR_SPEC.md)
+### 3.35 Graceful Shutdown
 
 ```python
 # purr/shutdown.py
@@ -1387,7 +1387,7 @@ async def graceful_shutdown(stream=None, bus=None, core=None, timeout: float = 3
         core.close()
 ```
 
-### 3.36 Deterministic Replay (из PURR_SPEC.md)
+### 3.36 Deterministic Replay
 
 ```python
 # purr/replay.py
@@ -1420,31 +1420,31 @@ class ReplayEngine:
             self._log = json.load(f)
 ```
 
-### 3.37 Testing Strategy (из PURR_SPEC.md)
+### 3.37 Testing Strategy
 
-Ключевые тесты:
+The key tests:
 
-1. **Replay test** — записать лог, пересоздать Core, применить лог → финальное состояние идентично
-2. **Crash recovery test** — убить процесс, перезапустить → состояние из последнего снепшота
-3. **Concurrency test** — 100 потоков одновременно ApplyDelta → ни одной гонки
-4. **Backpressure test** — EventBus с медленным подписчиком → буфер не переполняется
+1. **Replay test** — record a log, recreate Core, apply the log → the final state is identical
+2. **Crash recovery test** — kill the process, restart → the state comes from the last snapshot
+3. **Concurrency test** — 100 threads calling ApplyDelta at once → not a single race
+4. **Backpressure test** — EventBus with a slow subscriber → the buffer does not overflow
 
 ### 3.38 Missing Items from Cross-Check
 
-Дополнения после сверки 4 документов.
+Additions after reconciling four design documents.
 
-#### From sqredis_ARCH.md:
-- **MSET/MGET** — атомарная multi-key запись/чтение (Phase 1)
-- **EXISTS** — проверка существования ключа (Phase 1)
+#### From the architecture review:
+- **MSET/MGET** — atomic multi-key write/read (Phase 1)
+- **EXISTS** — check whether a key exists (Phase 1)
 - **PubSub subscriber_type + callback_url** — webhook delivery (Phase 3)
-- **Persistent pubsub_messages table** — три таблицы для PubSub (Phase 3)
+- **Persistent pubsub_messages table** — three tables for PubSub (Phase 3)
 
-#### From PURR_SPEC.md:
+#### From the engine specification:
 - **Core API methods** — SubscribeRaw, AddEvent, Close (Phase 1)
 - **Config functional options** — WithInitialState, WithMaxLastEvents, etc. (Phase 1)
-- **InteractionCount** — счётчик взаимодействий в Snapshot (Phase 1)
-- **Fail-fast validation** — принцип "ошибка, не тихий дроп" (Phase 1)
-- **Named metrics** — 9 конкретных имён (Phase 5):
+- **InteractionCount** — an interaction counter in the Snapshot (Phase 1)
+- **Fail-fast validation** — the "error, not a silent drop" principle (Phase 1)
+- **Named metrics** — nine concrete names (Phase 5):
   - `purr_state_fields`, `purr_delta_total`, `purr_delta_errors_total`
   - `purr_eventbus_published_total`, `purr_eventbus_delivered_total`, `purr_eventbus_dropped_total`
   - `purr_stream_windows_active`, `purr_stream_events_windowed_total`
