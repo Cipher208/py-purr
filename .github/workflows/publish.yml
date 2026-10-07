@@ -93,4 +93,11 @@ jobs:
           name: dist
           path: dist/
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # Pinned to a commit SHA rather than to the `release/v1` branch. CodeQL
+      # flagged this as `actions/unpinned-tag` and it was right: the workflow
+      # that uploads to PyPI is the wrong place to trust a moving ref. A branch
+      # can be rewritten and a tag can be moved, and whoever controls the ref
+      # would be running code that holds this repository's PyPI credentials.
+      #
+      # Dependabot keeps SHA pins current and preserves the trailing comment.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
