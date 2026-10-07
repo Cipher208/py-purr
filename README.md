@@ -4,7 +4,7 @@
 
 *State Machine, Sagas, Event Streams, and Key-Value Store with SQLite WAL persistence.*
 
-[![CI](https://github.com/Cipher208/PURR/actions/workflows/ci.yml/badge.svg)](https://github.com/Cipher208/PURR/actions/workflows/ci.yml)
+[![CI](https://github.com/Cipher208/py-purr/actions/workflows/ci.yml/badge.svg)](https://github.com/Cipher208/py-purr/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -28,8 +28,18 @@ Modern applications and autonomous AI agents need reliable state management, eve
 ## 📦 Installation
 
 ```bash
-pip install purr
+pip install py-purr
 ```
+
+The distribution is called **`py-purr`**, but you import it as **`purr`**:
+
+```python
+from purr import Store
+```
+
+The name `purr` on PyPI belongs to an unrelated package, so `pip install purr`
+would have installed somebody else's library. This is the only reason the
+distribution and the import differ.
 
 *(Or install locally via `pip install -e .`)*
 
@@ -165,11 +175,14 @@ asyncio.run(pipeline.execute(event, handle_alert))
 
 ## 🛠️ Development & Testing
 
-Run the full test suite (67 tests):
-
 ```bash
-uv run --with pytest --with pytest-asyncio pytest -v
+uv sync --extra dev
+uv run pytest -v
 ```
+
+The suite is 95 tests and runs in under a second. CI additionally enforces
+`ruff check`, `ruff format --check`, and a coverage gate of 85% on Python
+3.11, 3.12 and 3.13.
 
 ---
 

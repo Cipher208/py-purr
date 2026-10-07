@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Cipher208/py-purr/security/advisories/new
+    about: Please report security problems privately, never as a public issue.
+  - name: Documentation
+    url: https://github.com/Cipher208/py-purr#-quick-tour
+    about: The README tours every engine — worth a look before filing a bug.
+  - name: Questions and ideas
+    url: https://github.com/Cipher208/py-purr/discussions
+    about: For open-ended questions that are not a bug report or a feature request.

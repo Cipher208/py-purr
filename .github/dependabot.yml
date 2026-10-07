@@ -1,0 +1,39 @@
+version: 2
+
+updates:
+  # Python dependencies, including the ones the test suite needs. Grouped into
+  # one pull request per week: six separate PRs for six patch bumps teaches a
+  # maintainer to ignore Dependabot.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Moscow
+    open-pull-requests-limit: 3
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    # Majors stay separate and deliberate — a pydantic or pytest major is a
+    # migration with reading to do, not a lockfile bump.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # CI pins actions by major tag; this keeps those tags current and surfaces a
+  # deprecation before GitHub turns it into a red build.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]

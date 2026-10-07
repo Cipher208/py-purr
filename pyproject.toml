@@ -3,12 +3,26 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "purr"
+name = "py-purr"
 version = "0.1.0"
-description = "Redis-like on SQLite — state machine, sagas, middleware, WAL"
+description = "Zero-infrastructure SQLite-backed alternative to Redis: KV with TTL, state machines, sagas, event streams and pub/sub."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
+authors = [{ name = "Cipher208" }]
+keywords = ["redis", "sqlite", "state-machine", "saga", "event-stream", "pubsub", "async", "embedded"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Distributed Computing",
+]
 dependencies = [
     "pydantic>=2.0",
 ]
@@ -20,6 +34,19 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Cipher208/py-purr"
+Repository = "https://github.com/Cipher208/py-purr"
+Issues = "https://github.com/Cipher208/py-purr/issues"
+Changelog = "https://github.com/Cipher208/py-purr/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+# The distribution is named `py-purr` — the name `purr` on PyPI belongs to an
+# unrelated package, so `pip install purr` would fetch somebody else's library.
+# The import stays plain `purr`: `from purr import Store`. The two names are
+# allowed to differ, and this is the line that makes it work.
+packages = ["purr"]
 
 [tool.ruff]
 line-length = 100

@@ -47,6 +47,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ruff check` + `ruff format --check` + coverage gate (`--fail-under=85`).
 - Test matrix extended to Python 3.11/3.12/3.13.
 
+### Packaging
+- **Distribution renamed to `py-purr`.** The name `purr` on PyPI already belongs
+  to an unrelated package, so `pip install purr` would fetch somebody else's
+  library. The **import is unchanged**: `from purr import Store`.
+- `pyproject.toml` filled in for a public release: `authors`, `keywords`,
+  `classifiers`, `[project.urls]`, and an explicit `packages = ["purr"]`.
+- README install line, CI badge and clone instructions updated to the new
+  repository name.
+
 ## [0.1.0] - 2026-08-14
 
 - Initial release: `Store`, `StateMachine`, `Saga`, `EventBus`,
