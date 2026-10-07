@@ -4,6 +4,7 @@
 
 *State Machine, Sagas, Event Streams, and Key-Value Store with SQLite WAL persistence.*
 
+[![PyPI](https://img.shields.io/pypi/v/py-purr.svg)](https://pypi.org/project/py-purr/)
 [![CI](https://github.com/Cipher208/py-purr/actions/workflows/ci.yml/badge.svg)](https://github.com/Cipher208/py-purr/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
