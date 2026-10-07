@@ -2,9 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-10-07
+
+First public release. The distribution is named **`py-purr`** and imported as
+**`purr`** — see Packaging below for why the two differ.
+
+> Nothing was published before this release, so everything below ships as
+> `0.1.0`. There is no earlier version on PyPI to upgrade from.
 
 ### Added
 - Opt-in mutation journal: `Store` and `StateMachine` append mutation/transition
@@ -38,10 +45,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Instance-isolation contract documented on all engines (own connection
   per instance, safe file sharing, `close()` discipline).
 
+### Packaging
+- **Distribution renamed to `py-purr`.** The name `purr` on PyPI already belongs
+  to an unrelated package, so `pip install purr` would fetch somebody else's
+  library. The **import is unchanged**: `from purr import Store`.
+- `pyproject.toml` filled in for a public release: `authors`, `keywords`,
+  `classifiers`, `[project.urls]`, and an explicit `packages = ["purr"]`.
+- Version is now dynamic, read from `purr/__init__.py`, so the wheel metadata
+  and `purr.__version__` cannot drift apart.
+- README install line, CI badge and clone instructions updated to the new
+  repository name.
+
 ### Docs
 - README tours rewritten to match the real API (verified by execution);
   test count updated.
 - English docstrings for all public API.
+- `FUTURE_PLAN.md` translated to English, with the references to internal
+  design documents removed — they pointed at files that were never part of
+  this repository.
 
 ### CI
 - `ruff check` + `ruff format --check` + coverage gate (`--fail-under=85`).
@@ -55,19 +76,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `purr/__init__.py`.
 - `concurrency` cancel-in-progress, and workflow action versions updated
   (`checkout@v7`, `setup-python@v7`, `codeql-action@v4`).
-
-### Packaging
-- **Distribution renamed to `py-purr`.** The name `purr` on PyPI already belongs
-  to an unrelated package, so `pip install purr` would fetch somebody else's
-  library. The **import is unchanged**: `from purr import Store`.
-- `pyproject.toml` filled in for a public release: `authors`, `keywords`,
-  `classifiers`, `[project.urls]`, and an explicit `packages = ["purr"]`.
-- Version is now dynamic, read from `purr/__init__.py`, so the wheel metadata
-  and `purr.__version__` cannot drift apart.
-- README install line, CI badge and clone instructions updated to the new
-  repository name.
-
-## [0.1.0] - 2026-08-14
-
-- Initial release: `Store`, `StateMachine`, `Saga`, `EventBus`,
-  `EventStream`, middleware pipeline, health, retry, event versioning.
