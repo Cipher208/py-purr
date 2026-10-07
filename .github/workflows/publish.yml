@@ -70,7 +70,7 @@ jobs:
           /tmp/check/bin/python -m pip install dist/*.whl
           /tmp/check/bin/python -c "import purr; from purr import Store; print('import ok', purr.__version__)"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dist
           path: dist/
@@ -88,7 +88,7 @@ jobs:
       # The OIDC token that PyPI exchanges for a short-lived upload credential.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: dist
           path: dist/

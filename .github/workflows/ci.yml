@@ -72,7 +72,7 @@ jobs:
           # Installed under the distribution name `py-purr`, imported as `purr`.
           /tmp/check/bin/python -c "import purr; from purr import Store, StateMachine, Saga, EventStream, EventBus; print('import ok', purr.__version__)"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dist
           path: dist/
