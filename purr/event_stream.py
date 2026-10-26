@@ -81,6 +81,10 @@ class EventStream(SQLiteBackend):
         try:
             self._insert(conn, event)
         except sqlite3.IntegrityError as exc:
+            # The failed INSERT already opened an implicit transaction; leaving
+            # it open holds a RESERVED lock on the whole database file, so every
+            # other writer blocks until close(). Same as append_many().
+            conn.rollback()
             raise ValueError(f"duplicate event id: {event.id}") from exc
         conn.commit()
 

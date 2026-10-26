@@ -1,6 +1,8 @@
 """Fixer tests, заход 2: event_stream.py (P1-5, P2 index, batch) and event.py (P1-7)."""
 
 import asyncio
+import sqlite3
+from datetime import UTC, datetime
 
 import pytest
 
@@ -152,3 +154,37 @@ class TestPublishSync:
                 bus.publish_sync(Event(type=EventType.SYSTEM, topic="s.topic"))
 
             asyncio.run(inside())
+
+
+# ---------------- Fix 5: rejected duplicate must not leak a transaction ----------------
+
+
+class TestAppendDuplicateRollsBack:
+    def test_append_duplicate_does_not_leak_transaction(self, tmp_path):
+        """A rejected duplicate append must leave no open write transaction.
+
+        The failed INSERT otherwise keeps a RESERVED lock on the whole
+        database file until close(), so every other writer (other threads,
+        other engines, fresh connections) blocks on "database is locked".
+        """
+        db = tmp_path / "ev.db"
+        stream = EventStream(db)
+        stream.append(_event(event_id="dup"))
+
+        with pytest.raises(ValueError, match="duplicate event id"):
+            stream.append(_event(event_id="dup"))
+
+        # no implicit transaction left behind on the stream's connection
+        assert stream._get_conn().in_transaction is False
+
+        # and the file is immediately writable from a fresh connection
+        other = sqlite3.connect(str(db), timeout=0.5)
+        try:
+            other.execute(
+                "INSERT INTO events (id, type, topic, timestamp) VALUES (?, ?, ?, ?)",
+                ("fresh-id", EventType.SYSTEM.value, "t1", datetime.now(UTC).isoformat()),
+            )
+            other.commit()
+        finally:
+            other.close()
+        stream.close()

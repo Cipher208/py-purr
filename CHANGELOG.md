@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - P1-6: see Changed — saga re-execution and data rollback.
 - P1-7: see Changed — `publish_sync` delivery.
 - P1-8: see Added — per-engine migration registry for shared db files.
+- `EventStream.append()` now rolls back the failed transaction before raising
+  `ValueError` on a duplicate id (pass-2 audit regression): the rejected
+  `INSERT` used to leave an open write transaction holding a `RESERVED` lock
+  on the whole database file, so every other writer — other threads, other
+  engines on the same file, fresh connections — blocked with
+  `OperationalError: database is locked` until `close()`. `append_many()`
+  already did this; `append()` now matches.
 - README contracts aligned with actual behavior: saga is in-memory and its
   rollback covers previously completed steps only; TTL expiry is lazy;
   suite size updated.
