@@ -271,3 +271,54 @@ class TestStoreJournal:
         assert events == []
         s.close()
         es.close()
+
+
+class TestMsetJournalOrder:
+    def test_mset_journals_after_commit(self, tmp_path):
+        """At journal-emit time, mset data must already be committed and
+        visible to a second (independent) connection."""
+        from purr import EventStream, Store
+
+        es = EventStream(tmp_path / "j.db")
+        s = Store(tmp_path / "s.db", journal=es)
+        visible: list[bool] = []
+        original_emit = s._journal_emit
+
+        import sqlite3
+
+        def spy_emit(payload):
+            conn = sqlite3.connect(tmp_path / "s.db")
+            try:
+                row = conn.execute("SELECT value FROM kv WHERE key = ?", (payload["key"],)).fetchone()
+            finally:
+                conn.close()
+            visible.append(row is not None)
+            original_emit(payload)
+
+        s._journal_emit = spy_emit
+        s.mset({"a": 1, "b": 2})
+        assert visible == [True, True]
+        s.close()
+        es.close()
+
+
+class TestJournalBufferPerThread:
+    def test_journal_buffer_per_thread(self, tmp_path):
+        """The journal buffer must be per-thread: buffered events in one
+        thread's transaction() must never mix with another thread's."""
+        import threading
+
+        from purr import Store
+
+        s = Store(tmp_path / "s.db")
+        bufs: dict[str, list] = {}
+
+        def grab():
+            bufs[threading.current_thread().name] = s._journal_buffer
+
+        t = threading.Thread(target=grab, name="worker")
+        t.start()
+        t.join()
+        bufs["MainThread"] = s._journal_buffer
+        assert bufs["MainThread"] is not bufs["worker"]
+        s.close()

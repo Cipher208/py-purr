@@ -102,3 +102,80 @@ class TestEventStream:
 
         assert stream.count_since("err", seconds=3600) == 1
         assert stream.count_since(seconds=3600) == 2
+
+
+class TestCursorSemantics:
+    def test_read_missing_cursor_id_raises(self, stream):
+        e = Event(type=EventType.SYSTEM, topic="t", payload={})
+        stream.append(e)
+        with pytest.raises(ValueError, match="cursor references missing event id"):
+            stream.read(cursor="nonexistent-id")
+
+    def test_empty_read_returns_none_last_id(self, stream):
+        e = Event(type=EventType.SYSTEM, topic="t", payload={})
+        stream.append(e)
+        events, last_id = stream.read(cursor=e.id)
+        assert events == []
+        assert last_id is None
+
+    def test_read_from_beginning_without_cursor(self, stream):
+        e = Event(type=EventType.SYSTEM, topic="t", payload={})
+        stream.append(e)
+        events, last_id = stream.read()
+        assert [ev.id for ev in events] == [e.id]
+        assert last_id == e.id
+
+
+class TestCursorSemantics:
+    def test_read_missing_cursor_id_raises(self, stream):
+        e = Event(type=EventType.SYSTEM, topic="t", payload={})
+        stream.append(e)
+        with pytest.raises(ValueError, match="cursor references missing event id"):
+            stream.read(cursor="nonexistent-id")
+
+    def test_empty_read_returns_none_last_id(self, stream):
+        e = Event(type=EventType.SYSTEM, topic="t", payload={})
+        stream.append(e)
+        events, last_id = stream.read(cursor=e.id)
+        assert events == []
+        assert last_id is None
+
+    def test_read_from_beginning_without_cursor(self, stream):
+        e = Event(type=EventType.SYSTEM, topic="t", payload={})
+        stream.append(e)
+        events, last_id = stream.read()
+        assert [ev.id for ev in events] == [e.id]
+        assert last_id == e.id
+
+
+class TestRetention:
+    def test_maintain_respects_max_events(self, tmp_path):
+        stream = EventStream(tmp_path / "ev.db", max_events=3)
+        events = [Event(type=EventType.SYSTEM, topic="t", payload={"i": i}) for i in range(6)]
+        stream.append_many(events)
+        report = stream.maintain()
+        assert report["pruned_events"] == 3
+        assert stream.count() == 3
+        remaining = stream.read(limit=10)[0]
+        assert [e.payload["i"] for e in remaining] == [3, 4, 5]
+
+    def test_maintain_respects_max_age(self, tmp_path):
+        from datetime import UTC, datetime, timedelta
+
+        stream = EventStream(tmp_path / "ev.db", max_age_seconds=3600)
+        old = Event(
+            type=EventType.SYSTEM, topic="t", payload={}, timestamp=datetime.now(UTC) - timedelta(hours=2)
+        )
+        fresh = Event(type=EventType.SYSTEM, topic="t", payload={})
+        stream.append_many([old, fresh])
+        report = stream.maintain()
+        assert report["pruned_events"] == 1
+        assert stream.count() == 1
+        assert stream.read()[0][0].id == fresh.id
+
+    def test_default_no_retention(self, stream):
+        events = [Event(type=EventType.SYSTEM, topic="t", payload={}) for _ in range(5)]
+        stream.append_many(events)
+        report = stream.maintain()
+        assert "pruned_events" not in report
+        assert stream.count() == 5

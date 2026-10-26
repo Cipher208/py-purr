@@ -51,6 +51,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rollback covers previously completed steps only; TTL expiry is lazy;
   suite size updated.
 
+### Added
+- `EventStream(..., max_events=..., max_age_seconds=...)` retention limits
+  (P2-2): `maintain()` now prunes the log when limits are configured —
+  oldest events by `max_age_seconds` (timestamp) and/or events beyond
+  `max_events` (newest kept). The report gains a `pruned_events` key.
+  Default (`None`/`None`) is unchanged: no pruning.
+- `EventBus(on_handler_error=...)` optional callback (P2-4): invoked as
+  `(event, exception)` when a subscriber handler raises, instead of the
+  exception being silently swallowed. Default `None` keeps the historical
+  silent behavior. Exceptions in the callback itself are swallowed so the
+  dispatcher never breaks.
+
+### Changed
+- `EventStream.read()` cursor semantics (P2-1): reading with a cursor id
+  that does not exist in the stream now raises
+  `ValueError("cursor references missing event id: ...")` — previously it
+  silently returned `[]` forever, deadlocking consumers. An empty read
+  (no new events) now returns `last_event_id=None` instead of `""`, so a
+  consumer saving it cannot accidentally replay from the beginning.
+  `cursor=None` (default) still reads from the beginning of the stream.
+- `Store.mset()` now emits journal events *after* the commit, matching
+  `set()`/`delete()` ordering (P2-3): journal consumers never observe
+  uncommitted (or rolled-back) mset data. Inside an explicit
+  `transaction()` behavior is unchanged (buffered, flushed after commit).
+- `Store`'s internal journal buffer is per-thread (P2-5), matching the
+  per-thread connections and transaction flag: concurrent `transaction()`
+  blocks in different threads no longer mix or drop each other's buffered
+  journal events.
+
 ## [0.1.0] - 2026-10-07
 
 First public release. The distribution is named **`py-purr`** and imported as

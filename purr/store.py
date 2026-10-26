@@ -29,7 +29,6 @@ class Store(SQLiteBackend):
 
     def __init__(self, db_path: str | Path = "purr.db", journal: EventStream | None = None) -> None:
         self._journal = journal
-        self._journal_buffer: list[dict[str, Any]] = []
         super().__init__(db_path)
 
     @property
@@ -40,6 +39,13 @@ class Store(SQLiteBackend):
     @_in_transaction.setter
     def _in_transaction(self, value: bool) -> None:
         self._local.in_txn = value
+
+    @property
+    def _journal_buffer(self) -> list[dict[str, Any]]:
+        """Per-thread journal buffer (matches per-thread connections/txn flag)."""
+        if not hasattr(self._local, "journal_buffer"):
+            self._local.journal_buffer = []
+        return self._local.journal_buffer
 
     def _journal_emit(self, payload: dict[str, Any]) -> None:
         """Append a mutation event to the journal stream (buffered in txn)."""
@@ -268,9 +274,14 @@ class Store(SQLiteBackend):
         return self.incr(key, -amount)
 
     def mset(self, mapping: dict[str, Any]) -> None:
-        """Set multiple keys atomically."""
+        """Set multiple keys atomically.
+
+        Journal events are emitted after the commit (same ordering as
+        set/delete), so journal consumers never observe uncommitted data.
+        """
         conn = self._get_conn()
         now = datetime.now(UTC).isoformat()
+        journal_payloads: list[dict[str, Any]] = []
         for key, value in mapping.items():
             value_json = json.dumps(value)
             value_type = type(value).__name__
@@ -281,8 +292,10 @@ class Store(SQLiteBackend):
                 """,
                 (key, value_json, value_type, key, now, now),
             )
-            self._journal_emit({"op": "set", "key": key, "value": value})
+            journal_payloads.append({"op": "set", "key": key, "value": value})
         self._commit()
+        for payload in journal_payloads:
+            self._journal_emit(payload)
 
     def mget(self, keys: list[str]) -> list[Any | None]:
         """Get multiple values."""

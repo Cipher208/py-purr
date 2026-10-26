@@ -59,3 +59,52 @@ def test_history():
     assert len(bus.get_history()) == 3
     assert len(bus.get_history(topic="a")) == 1
     assert len(bus.get_history(topic="c")) == 1
+
+
+class TestHandlerErrorReporting:
+    def test_handler_error_reported_via_callback(self):
+        import asyncio
+
+        bus = EventBus(on_handler_error=lambda ev, exc: reported.append((ev.id, exc)))
+        reported: list = []
+        # rebuild bus after list exists (closure binding)
+        bus = EventBus(on_handler_error=lambda ev, exc: reported.append((ev.id, exc)))
+
+        async def bad_handler(event):
+            raise ValueError("boom")
+
+        async def run():
+            ev = Event(type=EventType.SYSTEM, topic="t", payload={})
+            bus.subscribe("t", bad_handler)
+            await bus.publish(ev)
+            return ev
+
+        ev = asyncio.run(run())
+        assert len(reported) == 1
+        assert reported[0][0] == ev.id
+        assert isinstance(reported[0][1], ValueError)
+
+    def test_handler_error_callback_sync(self):
+        reported: list = []
+        bus = EventBus(on_handler_error=lambda ev, exc: reported.append((ev.id, exc)))
+        ev = Event(type=EventType.SYSTEM, topic="t", payload={})
+        bus.subscribe("t", lambda e: 1 / 0)
+        bus.publish_sync(ev)
+        assert len(reported) == 1
+        assert isinstance(reported[0][1], ZeroDivisionError)
+
+    def test_on_handler_error_exceptions_swallowed(self):
+        def bad_cb(ev, exc):
+            raise RuntimeError("callback broke")
+
+        bus = EventBus(on_handler_error=bad_cb)
+        bus.subscribe("t", lambda e: 1 / 0)
+        bus.publish_sync(Event(type=EventType.SYSTEM, topic="t", payload={}))
+
+    def test_default_stays_silent(self):
+        from purr import EventBus
+
+        bus = EventBus()
+        bus.subscribe("t", lambda e: 1 / 0)
+        bus.publish(Event(type=EventType.SYSTEM, topic="t", payload={}))
+        bus.publish_sync(Event(type=EventType.SYSTEM, topic="t", payload={}))

@@ -43,12 +43,30 @@ are also accepted by subscribe() and dispatched directly."""
 
 
 class EventBus:
-    """Simple pub/sub event bus."""
+    """Simple pub/sub event bus.
 
-    def __init__(self) -> None:
+    Args:
+        on_handler_error: Optional callback ``(event, exception) -> None``
+            invoked when a subscriber handler raises. By default (None)
+            handler exceptions stay silent, matching the historical
+            behavior. Exceptions raised by the callback itself are
+            swallowed so the dispatcher never breaks.
+    """
+
+    def __init__(
+        self, on_handler_error: Callable[[Event, BaseException], None] | None = None
+    ) -> None:
         self._handlers: dict[str, list[EventHandler]] = {}
         self._history: list[Event] = []
         self._max_history = 1000
+        self.on_handler_error = on_handler_error
+
+    def _report_handler_error(self, event: Event, exc: BaseException) -> None:
+        if self.on_handler_error is None:
+            return
+        # a broken error callback must not break the dispatcher
+        with contextlib.suppress(Exception):
+            self.on_handler_error(event, exc)
 
     def subscribe(self, topic: str, handler: EventHandler) -> None:
         """Subscribe to a topic."""
@@ -72,8 +90,10 @@ class EventBus:
 
         for handler in handlers + wildcard_handlers:
             # Don't let handler errors break the bus
-            with contextlib.suppress(Exception):
+            try:
                 await handler(event)
+            except Exception as exc:
+                self._report_handler_error(event, exc)
 
     def publish_sync(self, event: Event) -> None:
         """Publish synchronously (for non-async contexts).
@@ -94,10 +114,12 @@ class EventBus:
         coros: list[Coroutine[Any, Any, None]] = []
         for handler in handlers + wildcard_handlers:
             # Don't let handler errors break the bus
-            with contextlib.suppress(Exception):
+            try:
                 result = handler(event)
                 if result is not None and hasattr(result, "__await__"):
                     coros.append(result)
+            except Exception as exc:
+                self._report_handler_error(event, exc)
 
         if not coros:
             return
@@ -106,8 +128,10 @@ class EventBus:
             asyncio.get_running_loop()
         except RuntimeError:
             for coro in coros:
-                with contextlib.suppress(Exception):
+                try:
                     asyncio.run(coro)
+                except Exception as exc:
+                    self._report_handler_error(event, exc)
         else:
             for coro in coros:
                 coro.close()
