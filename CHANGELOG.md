@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking
+- `EventStream.append()` is now truly append-only: appending an event whose
+  id already exists raises `ValueError` instead of silently overwriting the
+  original event (P1-5). Code that relied on overwrite-by-id must switch to
+  explicit delete/recreate or new ids.
+
+### Added
+- `EventStream.append_many()` — atomic batch append (duplicate id rolls back
+  the whole batch); ~10× faster than per-event appends.
+- Schema migration v2 for `EventStream`: composite index
+  `idx_events_topic_ts (topic, timestamp)` — measured 20.10 → 0.74 ms/op on
+  100k events for `read(cursor, topic)`.
+- Per-engine migration registry: `_purr_schema (engine, version)` table lets
+  `Store`, `EventStream` and `StateMachine` share one database file without
+  skipping each other's migrations (P1-8). `PRAGMA user_version` is still
+  raised for compatibility; legacy databases (user_version > 0, no registry)
+  are upgraded by re-applying migrations idempotently.
+
+### Changed
+- `incr()`/`decr()` are atomic (own `BEGIN IMMEDIATE` when outside
+  `transaction()`); expired keys are not resurrected — incrementing an
+  expired or missing key starts from 0 (Redis semantics); TTL of a live key
+  is preserved (P1-3, P1-4).
+- `publish_sync()` now delivers to subscribers: sync handlers directly,
+  async handlers via `asyncio.run()` outside a loop; inside a running loop
+  it raises `RuntimeError` directing to `await publish()` (P1-7).
+- Saga `execute()` resets per-step state, so re-executing a saga never fires
+  compensations left over from a previous run; compensation now also removes
+  the keys a compensated step wrote from `saga.data` (P1-6).
+
+### Fixed
+- P1-1: failed `BEGIN IMMEDIATE` no longer poisons the transaction flag
+  (records were silently lost afterwards).
+- P1-2: transaction flag is thread-local, matching the per-thread
+  connections.
+- P1-3/P1-4: see Changed — atomic `incr` with Redis expiry semantics.
+- P1-5: see Breaking — enforced append-only event stream.
+- P1-6: see Changed — saga re-execution and data rollback.
+- P1-7: see Changed — `publish_sync` delivery.
+- P1-8: see Added — per-engine migration registry for shared db files.
+- README contracts aligned with actual behavior: saga is in-memory and its
+  rollback covers previously completed steps only; TTL expiry is lazy;
+  suite size updated.
+
 ## [0.1.0] - 2026-10-07
 
 First public release. The distribution is named **`py-purr`** and imported as

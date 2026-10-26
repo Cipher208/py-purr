@@ -18,6 +18,7 @@ class SQLiteBackend:
 
     BUSY_TIMEOUT_MS = 5000
     SCHEMA_VERSION = 1
+    ENGINE_NAME = ""
     MIGRATIONS: dict[int, str] = {}
 
     def __init__(self, db_path: str | Path) -> None:
@@ -29,15 +30,52 @@ class SQLiteBackend:
         """Create schema. Subclasses implement with their own DDL."""
 
     def run_migrations(self) -> int:
-        """Apply pending MIGRATIONS in order. Returns applied count."""
+        """Apply pending MIGRATIONS in order. Returns applied count.
+
+        Version tracking is per-engine via the _purr_schema registry table
+        (engine TEXT PRIMARY KEY, version INTEGER NOT NULL), because
+        PRAGMA user_version is a single counter per database FILE, not per
+        engine: two engines sharing one file would otherwise skip each
+        other's migrations ("no such table" on the second engine).
+
+        Legacy databases (user_version > 0, no registry row for this
+        engine): which engine owned user_version is unknowable, so ALL of
+        this engine's migrations are re-applied idempotently (the DDL uses
+        IF NOT EXISTS) and the engine registers at its SCHEMA_VERSION.
+
+        PRAGMA user_version is still kept (raised to the max applied
+        version) for older-tooling compatibility.
+        """
         conn = self._get_conn()
-        current = conn.execute("PRAGMA user_version").fetchone()[0] or 0
+        engine = self.ENGINE_NAME or type(self).__name__
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS _purr_schema"
+            " (engine TEXT PRIMARY KEY, version INTEGER NOT NULL)"
+        )
+        row = conn.execute(
+            "SELECT version FROM _purr_schema WHERE engine = ?", (engine,)
+        ).fetchone()
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0] or 0
         applied = 0
-        for version in sorted(self.MIGRATIONS):
-            if version > current:
-                conn.executescript(self.MIGRATIONS[version])
-                conn.execute(f"PRAGMA user_version={version}")
-                applied += 1
+        if row is None:
+            # No registry row: fresh engine, or legacy file (user_version > 0)
+            # where the engine's true version is unknowable — apply all
+            # migrations idempotently.
+            pending = sorted(self.MIGRATIONS)
+        else:
+            pending = [v for v in sorted(self.MIGRATIONS) if v > row[0]]
+        for version in pending:
+            conn.executescript(self.MIGRATIONS[version])
+            applied += 1
+        registered = max(pending) if pending else (row[0] if row else 0)
+        conn.execute(
+            "INSERT OR REPLACE INTO _purr_schema (engine, version) VALUES (?, ?)",
+            (engine, registered),
+        )
+        if registered < self.SCHEMA_VERSION:
+            registered = self.SCHEMA_VERSION
+        if user_version < registered:
+            conn.execute(f"PRAGMA user_version={registered}")
         conn.commit()
         return applied
 

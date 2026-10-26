@@ -20,8 +20,8 @@ Modern applications and autonomous AI agents need reliable state management, eve
 - 🪶 **Zero Infrastructure:** Pure Python. No Docker containers, no external services, no background daemons, zero network overhead.
 - ⚡ **SQLite WAL Mode:** Concurrency-safe, high-throughput atomic read/writes that survive crashes and power loss.
 - 🔄 **3-in-1 Architecture:**
-  1. **Key-Value Store:** Fast storage with TTL auto-expiry, atomic multi-set, and numeric operations.
-  2. **State Machine & Sagas:** FSM engine with persistent snapshots, guards, and automatic rollback on step failure (compensating transactions).
+  1. **Key-Value Store:** Fast storage with TTL (lazy expiry: checked on get/exists, or run sweep()/maintain() manually), atomic multi-set, and atomic numeric operations.
+  2. **State Machine & Sagas:** FSM engine with persistent snapshots, guards, and rollback of previously completed saga steps on failure (compensating transactions).
   3. **Event Streams & Pub/Sub:** Redis Streams-like append-only event store with consumer cursors and middleware pipelines (rate limiting, deduplication, filtering).
 
 ---
@@ -66,6 +66,11 @@ store.set("session_token", "xyz-123", ttl=3600)
 # Atomic multi-set and counters
 store.mset({"counter": 0, "status": "active"})
 store.incr("counter", 1)  # returns 1
+
+# TTL notes: expiry is lazy — an expired key disappears on get()/exists(),
+# but stays visible in keys()/size() until sweep() or maintain() runs.
+# incr() is atomic (safe across threads) and follows Redis semantics:
+# incrementing an expired or missing key starts from 0.
 ```
 
 ---
@@ -96,7 +101,7 @@ sm.restore_snapshot()
 
 ### 3. Sagas (Compensating Transactions)
 
-Execute multi-step distributed operations safely. If any step fails, PURR automatically executes compensating rollback actions in reverse order.
+Execute multi-step distributed operations safely. If any step fails, PURR automatically executes compensating rollback actions of previously completed steps in reverse order and removes their written data. Note: the failed step's own compensation is not run — handle it inside the action itself. Sagas are in-memory: if the process dies, all saga state is lost.
 
 ```python
 import asyncio
@@ -131,6 +136,9 @@ except RuntimeError as exc:
 ### 4. Event Streams & Consumer Groups (Redis Streams alternative)
 
 Append-only persistent event logs with cursor tracking across multiple consumers.
+The stream is enforced append-only: appending an event whose id already exists
+raises `ValueError` (since 0.1.x this previously overwrote the original event —
+a breaking change if you relied on overwrite-by-id).
 
 ```python
 from purr import Event, EventStream, EventType
@@ -170,6 +178,10 @@ event = Event(type=EventType.SYSTEM, topic="system.alerts.cpu", payload={"usage"
 asyncio.run(bus.publish(event))
 # Same event through the middleware pipeline (dedup + rate limit), then to the handler
 asyncio.run(pipeline.execute(event, handle_alert))
+
+# publish_sync delivers to subscribers outside an async context (sync
+# handlers directly; async handlers via asyncio.run). Inside a running
+# event loop, use the async publish() instead.
 ```
 
 ---
@@ -181,7 +193,7 @@ uv sync --extra dev
 uv run pytest -v
 ```
 
-The suite is 95 tests and runs in under a second. CI additionally enforces
+The suite is 117 tests and runs in a few seconds. CI additionally enforces
 `ruff check`, `ruff format --check`, and a coverage gate of 85% on Python
 3.11, 3.12 and 3.13.
 

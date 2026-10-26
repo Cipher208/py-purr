@@ -34,13 +34,20 @@ class SagaStep(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     status: SagaStatus = SagaStatus.PENDING
     result: dict[str, Any] = Field(default_factory=dict)
+    written: list[str] = Field(default_factory=list)
 
 
 class Saga:
     """Saga pattern for distributed transactions.
 
     Executes steps sequentially. If any step fails, compensates
-    previously completed steps in reverse order.
+    previously completed steps in reverse order and removes their
+    written keys from the saga data.
+
+    Rollback covers previously completed steps only; the failed
+    step's own compensation must be handled by the action itself.
+
+    The saga is in-memory: if the process dies, all state is lost.
     """
 
     def __init__(self, name: str) -> None:
@@ -75,6 +82,12 @@ class Saga:
         self._data = initial_data or {}
         self._status = SagaStatus.RUNNING
         self._current_step = 0
+        # Reset per-step state so a re-executed saga does not fire
+        # compensations from a previous run.
+        for step in self._steps:
+            step.status = SagaStatus.PENDING
+            step.result = {}
+            step.written = []
 
         try:
             for i, step in enumerate(self._steps):
@@ -82,8 +95,15 @@ class Saga:
                 step.status = SagaStatus.RUNNING
 
                 try:
+                    snapshot = dict(self._data)
                     step.result = await step.action(self._data)
                     self._data.update(step.result)
+                    # Keys this step wrote (new or changed) — rolled back
+                    # if the step is compensated later.
+                    step.written = [
+                        k for k in self._data
+                        if k not in snapshot or snapshot[k] != self._data[k]
+                    ]
                     step.status = SagaStatus.COMPLETED
                     step.data = self._data.copy()
 
@@ -106,10 +126,14 @@ class Saga:
 
         for i in range(failed_step - 1, -1, -1):
             step = self._steps[i]
-            if step.status == SagaStatus.COMPLETED and step.compensation:
-                # Compensation failed, continue with others
-                with contextlib.suppress(Exception):
-                    await step.compensation(step.data)
+            if step.status == SagaStatus.COMPLETED:
+                if step.compensation:
+                    # Compensation failed, continue with others
+                    with contextlib.suppress(Exception):
+                        await step.compensation(step.data)
+                # Roll back the data written by the compensated step.
+                for key in step.written:
+                    self._data.pop(key, None)
 
         self._status = SagaStatus.COMPENSATED
 

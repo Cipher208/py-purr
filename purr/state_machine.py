@@ -82,6 +82,7 @@ class StateMachine(SQLiteBackend):
         self.run_migrations()
 
     SCHEMA_VERSION = 1
+    ENGINE_NAME = "state_machine"
     MIGRATIONS = {
         1: """
             CREATE TABLE IF NOT EXISTS state_machines (
