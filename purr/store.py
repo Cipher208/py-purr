@@ -28,10 +28,18 @@ class Store(SQLiteBackend):
     """
 
     def __init__(self, db_path: str | Path = "purr.db", journal: EventStream | None = None) -> None:
-        self._in_transaction = False
         self._journal = journal
         self._journal_buffer: list[dict[str, Any]] = []
         super().__init__(db_path)
+
+    @property
+    def _in_transaction(self) -> bool:
+        """Per-thread transaction flag (connections are per-thread too)."""
+        return getattr(self._local, "in_txn", False)
+
+    @_in_transaction.setter
+    def _in_transaction(self, value: bool) -> None:
+        self._local.in_txn = value
 
     def _journal_emit(self, payload: dict[str, Any]) -> None:
         """Append a mutation event to the journal stream (buffered in txn)."""
@@ -65,7 +73,11 @@ class Store(SQLiteBackend):
             raise RuntimeError("nested transaction() is not supported")
         conn = self._get_conn()
         self._in_transaction = True
-        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+        except Exception:
+            self._in_transaction = False
+            raise
         try:
             yield self
             conn.commit()
@@ -81,6 +93,7 @@ class Store(SQLiteBackend):
         self.run_migrations()
 
     SCHEMA_VERSION = 1
+    ENGINE_NAME = "store"
     MIGRATIONS = {
         1: """
             CREATE TABLE IF NOT EXISTS kv (
@@ -201,18 +214,53 @@ class Store(SQLiteBackend):
         return True
 
     def incr(self, key: str, amount: int = 1) -> int:
-        """Increment a numeric value. Creates with 0 if not exists."""
-        conn = self._get_conn()
-        row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
-        if row:
-            current = json.loads(row["value"])
-            if not isinstance(current, (int, float)):
-                raise TypeError(f"Cannot increment non-numeric value: {key}")
-            new_val = current + amount if isinstance(current, float) else int(current) + amount
-        else:
-            new_val = amount
+        """Increment a numeric value atomically. Creates with amount if not exists.
 
-        self.set(key, new_val)
+        Expired keys are not resurrected: incrementing an expired or missing
+        key starts from 0 (Redis INCR semantics). TTL of a live key is kept.
+        """
+        conn = self._get_conn()
+        now = datetime.now(UTC).isoformat()
+        own_txn = not self._in_transaction
+        if own_txn:
+            conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+            current: Any = None
+            if row is not None:
+                meta = conn.execute(
+                    "SELECT expires_at FROM kv_meta WHERE key = ?", (key,)
+                ).fetchone()
+                if meta and meta["expires_at"]:
+                    expires_at = datetime.fromisoformat(meta["expires_at"])
+                    if datetime.now(UTC) > expires_at:
+                        conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+                        conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
+                        row = None
+            if row is not None:
+                current = json.loads(row["value"])
+                if not isinstance(current, (int, float)):
+                    raise TypeError(f"Cannot increment non-numeric value: {key}")
+                new_val = current + amount if isinstance(current, float) else int(current) + amount
+                conn.execute(
+                    "UPDATE kv SET value = ?, updated_at = ? WHERE key = ?",
+                    (json.dumps(new_val), now, key),
+                )
+            else:
+                new_val = amount
+                conn.execute(
+                    "INSERT OR REPLACE INTO kv (key, value, type, created_at, updated_at)"
+                    " VALUES (?, ?, 'int', ?, ?)",
+                    (key, json.dumps(amount), now, now),
+                )
+            # kv_meta untouched for live keys: TTL preserved (P1-4).
+            self._journal_emit({"op": "set", "key": key, "value": new_val})
+        except Exception:
+            if own_txn:
+                conn.rollback()
+            raise
+        if own_txn:
+            conn.commit()
         return new_val
 
     def decr(self, key: str, amount: int = 1) -> int:
