@@ -106,5 +106,7 @@ class TestHandlerErrorReporting:
 
         bus = EventBus()
         bus.subscribe("t", lambda e: 1 / 0)
-        bus.publish(Event(type=EventType.SYSTEM, topic="t", payload={}))
+        import asyncio
+
+        asyncio.run(bus.publish(Event(type=EventType.SYSTEM, topic="t", payload={})))
         bus.publish_sync(Event(type=EventType.SYSTEM, topic="t", payload={}))
