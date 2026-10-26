@@ -289,7 +289,9 @@ class TestMsetJournalOrder:
         def spy_emit(payload):
             conn = sqlite3.connect(tmp_path / "s.db")
             try:
-                row = conn.execute("SELECT value FROM kv WHERE key = ?", (payload["key"],)).fetchone()
+                row = conn.execute(
+                    "SELECT value FROM kv WHERE key = ?", (payload["key"],)
+                ).fetchone()
             finally:
                 conn.close()
             visible.append(row is not None)

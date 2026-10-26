@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import uuid
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
@@ -42,6 +43,11 @@ EventHandler = Callable[[Event], Coroutine[Any, Any, None]]
 are also accepted by subscribe() and dispatched directly."""
 
 
+async def _await_result(result: Any) -> None:
+    """Await an arbitrary awaitable — asyncio.run() accepts only coroutines."""
+    await result
+
+
 class EventBus:
     """Simple pub/sub event bus.
 
@@ -61,12 +67,42 @@ class EventBus:
         self._max_history = 1000
         self.on_handler_error = on_handler_error
 
-    def _report_handler_error(self, event: Event, exc: BaseException) -> None:
+    def _call_error_callback(self, event: Event, exc: BaseException) -> Any:
+        """Invoke on_handler_error, swallowing its own failures."""
         if self.on_handler_error is None:
-            return
+            return None
         # a broken error callback must not break the dispatcher
-        with contextlib.suppress(Exception):
-            self.on_handler_error(event, exc)
+        try:
+            return self.on_handler_error(event, exc)
+        except Exception:
+            return None
+
+    def _report_handler_error(self, event: Event, exc: BaseException) -> None:
+        """Report a handler error from synchronous code.
+
+        An async on_handler_error is executed with asyncio.run() when no loop
+        is running. Inside a running loop it cannot be awaited from here, so
+        the coroutine is closed — the error was already lost, but at least it
+        no longer emits a "coroutine was never awaited" RuntimeWarning. The
+        async path (publish) awaits such a callback instead.
+        """
+        result = self._call_error_callback(event, exc)
+        if not inspect.iscoroutine(result):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            with contextlib.suppress(Exception):
+                asyncio.run(result)
+        else:
+            result.close()
+
+    async def _report_handler_error_async(self, event: Event, exc: BaseException) -> None:
+        """Report a handler error from publish(): await an async callback."""
+        result = self._call_error_callback(event, exc)
+        if inspect.isawaitable(result):
+            with contextlib.suppress(Exception):
+                await result
 
     def subscribe(self, topic: str, handler: EventHandler) -> None:
         """Subscribe to a topic."""
@@ -93,49 +129,55 @@ class EventBus:
             try:
                 await handler(event)
             except Exception as exc:
-                self._report_handler_error(event, exc)
+                await self._report_handler_error_async(event, exc)
 
     def publish_sync(self, event: Event) -> None:
         """Publish synchronously (for non-async contexts).
 
-        Sync handlers are invoked directly. Async handlers are executed via
-        asyncio.run() — allowed only when no event loop is running; calling
-        publish_sync with async handlers inside a running loop raises
-        RuntimeError("use await bus.publish() inside async context").
+        Delivery order is subscription order (event handlers, then "*"
+        wildcard handlers). Sync handlers are invoked directly; ``async def``
+        handlers are executed with asyncio.run() at their own position in
+        that order, so mixing both kinds does not reorder delivery.
+
+        With a running event loop and at least one async handler this raises
+        RuntimeError("use await bus.publish() inside async context") before
+        ANY handler is called: the call cannot deliver the async part, and
+        running the sync handlers first left their side effects behind an
+        exception. Async handlers are recognised by
+        inspect.iscoroutinefunction; a plain function that *returns* an
+        awaitable cannot be recognised before being called, so it is treated
+        as sync (it runs; its awaitable is executed too since no loop is
+        running).
+
         Handler exceptions are suppressed, matching async publish().
         """
         self._history.append(event)
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history :]
 
-        handlers = self._handlers.get(event.topic, [])
-        wildcard_handlers = self._handlers.get("*", [])
+        handlers = self._handlers.get(event.topic, []) + self._handlers.get("*", [])
 
-        coros: list[Coroutine[Any, Any, None]] = []
-        for handler in handlers + wildcard_handlers:
+        if any(inspect.iscoroutinefunction(handler) for handler in handlers):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError("use await bus.publish() inside async context")
+
+        for handler in handlers:
             # Don't let handler errors break the bus
             try:
+                if inspect.iscoroutinefunction(handler):
+                    asyncio.run(handler(event))
+                    continue
                 result = handler(event)
-                if result is not None and hasattr(result, "__await__"):
-                    coros.append(result)
+                if inspect.isawaitable(result):
+                    # Edge: sync callable that returned an awaitable. No loop
+                    # is running here, so run it like an async handler.
+                    asyncio.run(_await_result(result))
             except Exception as exc:
                 self._report_handler_error(event, exc)
-
-        if not coros:
-            return
-
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            for coro in coros:
-                try:
-                    asyncio.run(coro)
-                except Exception as exc:
-                    self._report_handler_error(event, exc)
-        else:
-            for coro in coros:
-                coro.close()
-            raise RuntimeError("use await bus.publish() inside async context")
 
     def get_history(self, topic: str | None = None, limit: int = 100) -> list[Event]:
         """Get event history."""

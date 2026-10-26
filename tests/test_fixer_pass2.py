@@ -63,7 +63,13 @@ class TestMigrationV2:
         conn = stream._get_conn()
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
 
-        cols = [name for _, name in sorted((r["seqno"], r["name"]) for r in conn.execute("PRAGMA index_info('idx_events_topic_ts')").fetchall())]
+        cols = [
+            name
+            for _, name in sorted(
+                (r["seqno"], r["name"])
+                for r in conn.execute("PRAGMA index_info('idx_events_topic_ts')").fetchall()
+            )
+        ]
         assert cols == ["topic", "timestamp"]
 
         # EQP: topic+cursor read uses the index, no TEMP B-TREE

@@ -40,9 +40,11 @@ class TestP1_1TransactionFlagReset:
         proxy = _FlakyConn(s._get_conn())
         monkeypatch.setattr(s, "_get_conn", lambda: proxy)
 
-        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
-            with s.transaction():
-                pass  # pragma: no cover
+        with (
+            pytest.raises(sqlite3.OperationalError, match="database is locked"),
+            s.transaction(),
+        ):
+            pass  # pragma: no cover
 
         # flag must be reset, not poisoned
         assert s._in_transaction is False

@@ -33,6 +33,32 @@ class EventStream(SQLiteBackend):
         max_events: int | None = None,
         max_age_seconds: float | None = None,
     ) -> None:
+        """Open (or create) the stream.
+
+        Retention limits are validated up front, before the database is
+        touched:
+
+        - ``max_events`` must be None or an int >= 1. ``0`` is rejected:
+          pruning to zero deletes the whole stream. ``-1`` is rejected too:
+          SQLite turns ``LIMIT -1`` into "no limit", so retention would be
+          silently disabled. A float (``2.9``) reaches SQLite as a datatype
+          mismatch and fails inside maintain(), and ``"2"`` would be coerced
+          silently — neither is accepted.
+        - ``max_age_seconds`` must be None or an int/float > 0.
+
+        bool is rejected for both even though it is an int subclass: True
+        and False as a retention limit are always a mistake.
+        """
+        if max_events is not None and (
+            isinstance(max_events, bool) or not isinstance(max_events, int) or max_events < 1
+        ):
+            raise ValueError("max_events must be a positive int or None")
+        if max_age_seconds is not None and (
+            isinstance(max_age_seconds, bool)
+            or not isinstance(max_age_seconds, int | float)
+            or max_age_seconds <= 0
+        ):
+            raise ValueError("max_age_seconds must be a positive number or None")
         super().__init__(db_path)
         self._max_events = max_events
         self._max_age_seconds = max_age_seconds
@@ -272,11 +298,13 @@ class EventStream(SQLiteBackend):
         When max_events/max_age_seconds were configured at construction,
         maintain() prunes the log (for max_events it keeps the newest
         events in read order, i.e. by (timestamp, rowid) DESC; for
-        max_age_seconds it drops events older than the cutoff). Cursors
-        pointing at pruned events are left in place — reading with such a
-        cursor now raises ValueError; call reset_cursor(name) to drop it and
-        restart that consumer from the beginning. By default (no limits) the
-        replay log is never pruned.
+        max_age_seconds it drops events older than the cutoff). Both limits
+        must be positive (max_events >= 1, max_age_seconds > 0): 0 and
+        negatives are rejected by __init__, there is no "prune everything"
+        mode. Cursors pointing at pruned events are left in place — reading
+        with such a cursor now raises ValueError; call reset_cursor(name) to
+        drop it and restart that consumer from the beginning. By default
+        (no limits) the replay log is never pruned.
         """
         report: dict[str, Any] = {
             "events": self.count(),

@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   id already exists raises `ValueError` instead of silently overwriting the
   original event (P1-5). Code that relied on overwrite-by-id must switch to
   explicit delete/recreate or new ids.
+- `EventStream(...)` validates its retention limits at construction
+  (pass-6 audit): `max_events` must be `None` or an `int >= 1`,
+  `max_age_seconds` must be `None` or a number `> 0`; otherwise `ValueError`.
+  `max_events=0` used to mean "prune the whole stream" — it is now rejected
+  (delete explicitly with `clear()`), as are negatives (`-1` reached SQLite as
+  `LIMIT -1`, i.e. every pruning statement deleted nothing and retention was
+  silently off), floats (`2.9` died later with
+  `sqlite3.IntegrityError: datatype mismatch`), numeric strings (`"2"` was
+  coerced silently) and booleans.
 
 ### Added
 - `EventStream.append_many()` — atomic batch append (duplicate id rolls back
@@ -123,6 +132,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so in-place nested mutations are rolled back too. Rollback restores the old
   value of overwritten keys and re-adds keys the step deleted, instead of
   `pop()`-ing them out of `saga.data`.
+- `publish_sync()` (pass-6 audit) detects a running event loop *before*
+  dispatching: it used to call every sync handler while merely collecting
+  coroutines and only then raise `RuntimeError`, so the side effects were
+  already committed when the caller was told the call cannot work. Delivery
+  also follows subscription order now — an `async def` handler subscribed
+  first runs first; before, async handlers were all pushed to the end
+  (`async-1, sync-2, sync-3` arrived as `sync-2, sync-3, async-1`).
+- An async `on_handler_error` callback is no longer a lost coroutine
+  (pass-6 audit): `publish()` awaits it, `publish_sync()` runs it with
+  `asyncio.run()` or closes it when a loop is running. It used to fail with
+  `RuntimeWarning: coroutine ... was never awaited` and the error vanished.
+- `close()` resets the calling thread's per-thread state — `conn`, `in_txn`
+  and the journal buffer (pass-6 audit). Closing inside a transaction left
+  `in_txn=True` and a stale buffer behind, so every later `transaction()` on
+  that thread died with "nested transaction() is not supported", forever.
+  Other threads' state is untouched (their connections are a separate known
+  issue).
+- `run_migrations()` writes the *final* version to the `_purr_schema`
+  registry (pass-6 audit): the row was written before the clamp, so with
+  `SCHEMA_VERSION=3` and `MIGRATIONS={1}` the registry recorded 1 while
+  `PRAGMA user_version` said 3, and the registry stayed at 1 for good. The row
+  and `user_version` now hold the same value — the highest applied migration,
+  capped at `SCHEMA_VERSION`. `SCHEMA_VERSION` is a ceiling, never a claim:
+  registering 3 would make a v2/v3 migration added later look applied and
+  silently skip it.
 
 ### Added
 - `EventStream(..., max_events=..., max_age_seconds=...)` retention limits

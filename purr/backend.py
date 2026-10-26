@@ -41,10 +41,14 @@ class SQLiteBackend:
         Legacy databases (user_version > 0, no registry row for this
         engine): which engine owned user_version is unknowable, so ALL of
         this engine's migrations are re-applied idempotently (the DDL uses
-        IF NOT EXISTS) and the engine registers at its SCHEMA_VERSION.
+        IF NOT EXISTS) and the engine registers at the highest applied
+        migration.
 
-        PRAGMA user_version is still kept (raised to the max applied
-        version) for older-tooling compatibility.
+        The registry row and PRAGMA user_version always hold the same value:
+        the highest applied migration, capped at SCHEMA_VERSION. SCHEMA_VERSION
+        is a ceiling, never a claim — an engine may declare a version ahead of
+        its MIGRATIONS, and registering that version would make a migration
+        added later look already applied and silently skip it.
 
         Opening an already-migrated database performs no writes at all: the
         registry row and user_version are only written when migrations are
@@ -85,13 +89,22 @@ class SQLiteBackend:
             for version in pending:
                 conn.executescript(self.MIGRATIONS[version])
                 applied += 1
-            registered = max(pending) if pending else (row[0] if row else 0)
+            # Registry and user_version must agree, and neither may claim a
+            # schema newer than the migrations actually applied. Writing the
+            # row before the clamp pinned the registry at the highest applied
+            # migration (1) while user_version was raised to SCHEMA_VERSION
+            # (3), so the two disagreed and the registry stayed at 1 forever.
+            # Clamping the row UP to SCHEMA_VERSION would be worse the other
+            # way: an engine whose SCHEMA_VERSION runs ahead of its
+            # MIGRATIONS would register as current and skip the migration
+            # added later. So SCHEMA_VERSION is a ceiling here, and the row
+            # gets the final value that is written.
+            registered = max([*pending, row[0] if row else 0])
+            registered = min(registered, self.SCHEMA_VERSION)
             conn.execute(
                 "INSERT OR REPLACE INTO _purr_schema (engine, version) VALUES (?, ?)",
                 (engine, registered),
             )
-            if registered < self.SCHEMA_VERSION:
-                registered = self.SCHEMA_VERSION
             if user_version < registered:
                 conn.execute(f"PRAGMA user_version={registered}")
             conn.commit()
@@ -117,11 +130,24 @@ class SQLiteBackend:
         return self._local.conn
 
     def close(self) -> None:
-        """Close the connection for this thread."""
+        """Close the connection for this thread and reset its per-thread state.
+
+        The transaction flag and the journal buffer live in threading.local
+        and outlive the connection. Closing while a transaction is open used
+        to leave in_txn=True behind, so every later transaction() on that
+        thread failed with "nested transaction() is not supported" forever.
+        Attrs are reset even when there is no connection to close, so a second
+        close() is harmless.
+
+        Only the calling thread is reset: other threads keep their own
+        connections, transaction flags and buffers.
+        """
         if hasattr(self._local, "conn") and self._local.conn is not None:
             with contextlib.suppress(Exception):
                 self._local.conn.close()
-            self._local.conn = None
+        self._local.conn = None
+        self._local.in_txn = False
+        self._local.journal_buffer = []
 
     def checkpoint(self) -> str:
         """Checkpoint the WAL. Returns ok/busy."""

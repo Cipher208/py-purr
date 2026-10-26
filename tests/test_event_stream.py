@@ -126,7 +126,7 @@ class TestCursorSemantics:
         assert last_id == e.id
 
 
-class TestCursorSemantics:
+class TestCursorSafety:
     def test_read_missing_cursor_id_raises(self, stream):
         e = Event(type=EventType.SYSTEM, topic="t", payload={})
         stream.append(e)
@@ -164,7 +164,10 @@ class TestRetention:
 
         stream = EventStream(tmp_path / "ev.db", max_age_seconds=3600)
         old = Event(
-            type=EventType.SYSTEM, topic="t", payload={}, timestamp=datetime.now(UTC) - timedelta(hours=2)
+            type=EventType.SYSTEM,
+            topic="t",
+            payload={},
+            timestamp=datetime.now(UTC) - timedelta(hours=2),
         )
         fresh = Event(type=EventType.SYSTEM, topic="t", payload={})
         stream.append_many([old, fresh])
