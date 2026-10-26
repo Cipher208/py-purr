@@ -38,7 +38,6 @@ class RetryHandler:
 
     def __init__(self, config: RetryConfig | None = None) -> None:
         self._config = config or RetryConfig()
-        self._pending: dict[str, RetryState] = {}
 
     async def execute(
         self,
@@ -66,9 +65,14 @@ class RetryHandler:
                 await asyncio.sleep(delay)
 
     def _calculate_delay(self, attempt: int) -> float:
-        """Calculate delay with exponential backoff and jitter."""
+        """Calculate delay with exponential backoff and jitter.
+
+        The cap is applied after the jitter, not before: jitter multiplies by
+        up to 1.5x, so clamping first let the real ceiling drift to
+        1.5 * max_delay and a caller asking for max_delay=60 waited up to 90 s.
+        """
         delay = self._config.base_delay * (self._config.exponential_base ** (attempt - 1))
         delay = min(delay, self._config.max_delay)
         if self._config.jitter:
             delay *= 0.5 + random.random()
-        return delay
+        return min(delay, self._config.max_delay)

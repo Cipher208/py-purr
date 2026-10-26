@@ -87,7 +87,15 @@ class SQLiteBackend:
                 " (engine TEXT PRIMARY KEY, version INTEGER NOT NULL)"
             )
             for version in pending:
-                conn.executescript(self.MIGRATIONS[version])
+                # One transaction per migration. executescript() commits any
+                # pending transaction before it starts and then runs the
+                # script statement by statement, committing each one — so a
+                # script that failed halfway left its earlier DDL applied
+                # while the version stayed behind, and a retry of the same
+                # non-idempotent DDL could never succeed. The transaction must
+                # therefore live inside the script text; the rollback in the
+                # handler below then unwinds the whole migration.
+                conn.executescript(f"BEGIN;\n{self.MIGRATIONS[version]}\nCOMMIT;")
                 applied += 1
             # Registry and user_version must agree, and neither may claim a
             # schema newer than the migrations actually applied. Writing the
@@ -121,13 +129,107 @@ class SQLiteBackend:
 
     def _get_conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(str(self._db_path))
-            self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA synchronous=NORMAL")
+            conn = sqlite3.connect(str(self._db_path))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             # Explicit writer-wait contract: do not rely on the driver default.
-            self._local.conn.execute(f"PRAGMA busy_timeout={self.BUSY_TIMEOUT_MS}")
-            self._local.conn.row_factory = sqlite3.Row
+            conn.execute(f"PRAGMA busy_timeout={self.BUSY_TIMEOUT_MS}")
+            # 16 MB page cache (was 2 MB), 256 MB address-space mapping (was 0,
+            # i.e. every read copied pages through a syscall), temp tables and
+            # sorts in memory (was file-backed), and WAL capped at 64 MB (was
+            # unbounded, -1) so a long write burst cannot grow the -wal
+            # sidecar without limit.
+            conn.execute("PRAGMA cache_size=-16000")
+            conn.execute("PRAGMA mmap_size=268435456")
+            conn.execute("PRAGMA temp_store=MEMORY")
+            conn.execute("PRAGMA journal_size_limit=67108864")
+            # SQLite's LIKE folds ASCII case by default; keys() promises Redis
+            # KEYS semantics, where 'USER:*' must not match 'user:1'.
+            conn.execute("PRAGMA case_sensitive_like=ON")
+            conn.row_factory = sqlite3.Row
+            # Orphan rows predate FK enforcement: remove them first, while the
+            # constraint is still off, then turn enforcement on.
+            self._cleanup_orphans(conn)
+            self._enable_foreign_keys(conn)
+            self._local.conn = conn
         return self._local.conn
+
+    @staticmethod
+    def _quote(identifier: str) -> str:
+        return '"' + identifier.replace('"', '""') + '"'
+
+    def _foreign_keys(self, conn: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
+        """Every declared FK in the file: (child table, child col, parent, col).
+
+        Read from the schemas themselves (PRAGMA foreign_key_list) so the
+        backend needs no knowledge of which engine owns which table. SQLite
+        reports `to` as NULL when the FK targets the parent's primary key;
+        `PRAGMA table_info` resolves that column.
+        """
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+                " AND name NOT LIKE 'sqlite_%'"
+            )
+        ]
+        found: list[tuple[str, str, str, str]] = []
+        for table in tables:
+            for fk in conn.execute(f"PRAGMA foreign_key_list({self._quote(table)})"):
+                parent, child_col, parent_col = fk[2], fk[3], fk[4]
+                if not parent_col:
+                    parent_col = next(
+                        (
+                            col[1]
+                            for col in conn.execute(f"PRAGMA table_info({self._quote(parent)})")
+                            if col[5]
+                        ),
+                        None,
+                    )
+                if parent_col:
+                    found.append((table, child_col, parent, parent_col))
+        return found
+
+    def _cleanup_orphans(self, conn: sqlite3.Connection) -> int:
+        """Delete child rows whose FK parent is missing. Returns the count.
+
+        A database written before enforcement was on can hold orphans. They
+        are invisible to the constraint, but every later write that touches
+        the parent's key then fails with "FOREIGN KEY constraint failed", so
+        they must go before the pragma is enabled. The probe runs first and is
+        read-only: opening must not need the write lock (a second instance
+        opens while another holds BEGIN IMMEDIATE).
+        """
+        removed = 0
+        for table, child_col, parent, parent_col in self._foreign_keys(conn):
+            child = self._quote(table)
+            orphans = (
+                f"{self._quote(child_col)} IS NOT NULL AND NOT EXISTS"
+                f" (SELECT 1 FROM {self._quote(parent)} AS p"
+                f" WHERE p.{self._quote(parent_col)} = {child}.{self._quote(child_col)})"
+            )
+            if conn.execute(f"SELECT 1 FROM {child} WHERE {orphans}").fetchone() is None:
+                continue
+            cur = conn.execute(f"DELETE FROM {child} WHERE {orphans}")
+            removed += cur.rowcount
+            conn.commit()
+        return removed
+
+    def _enable_foreign_keys(self, conn: sqlite3.Connection) -> None:
+        """Turn FK enforcement on, verified by reading the pragma back.
+
+        `PRAGMA foreign_keys` is silently ignored inside a transaction, so it
+        runs before any DDL/DML on a connection with nothing open, and the
+        read-back proves the setting took instead of trusting the call. If it
+        did not, the open transaction is abandoned and it is retried once.
+        """
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute("PRAGMA foreign_keys=ON")
+        if not conn.execute("PRAGMA foreign_keys").fetchone()[0]:
+            conn.rollback()
+            conn.execute("PRAGMA foreign_keys=ON")
+
 
     def close(self) -> None:
         """Close the connection for this thread and reset its per-thread state.

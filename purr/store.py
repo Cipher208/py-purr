@@ -143,7 +143,7 @@ class Store(SQLiteBackend):
     def _init_db(self) -> None:
         self.run_migrations()
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
     ENGINE_NAME = "store"
     MIGRATIONS = {
         1: """
@@ -160,10 +160,29 @@ class Store(SQLiteBackend):
                 FOREIGN KEY (key) REFERENCES kv(key)
             );
             """,
+        # v2: sweep()/mget() filter on kv_meta.expires_at, which had no index —
+        # every expiry pass was a full scan of kv_meta. CREATE INDEX only, so
+        # existing databases are upgraded in place (the table is not recreated).
+        2: "CREATE INDEX IF NOT EXISTS idx_kv_meta_expires ON kv_meta(expires_at);",
     }
 
     def set(self, key: str, value: Any, ttl: float | None = None) -> bool:
         """Set a key-value pair. Returns True if new, False if updated.
+
+        One statement when the key is created, two when it is overwritten: the
+        `ON CONFLICT DO NOTHING` insert answers "did I create it?" by itself,
+        and the overwrite path is a plain UPDATE that never touches
+        created_at. Before this, every set() ran an extra
+        `SELECT key FROM kv WHERE key = ?` for the flag and a correlated
+        `COALESCE((SELECT created_at ...))` inside the INSERT — three index
+        lookups per write.
+
+        A single UPSERT with `RETURNING created_at` compared against `now`
+        would be one statement fewer, but it cannot tell a create from an
+        overwrite here: datetime.now() has a ~16 ms tick on Windows (2000
+        consecutive calls yield 2-3 distinct values), and a rewrite of the
+        same key happens microseconds later, so the timestamps are equal and
+        the write would be reported as a create.
 
         A failure part-way through (unserializable value, ttl overflow) rolls
         the partial write back: no half-applied row survives to be committed
@@ -175,15 +194,21 @@ class Store(SQLiteBackend):
         value_type = type(value).__name__
 
         try:
-            existing = conn.execute("SELECT key FROM kv WHERE key = ?", (key,)).fetchone()
-
-            conn.execute(
+            inserted = conn.execute(
                 """
-                INSERT OR REPLACE INTO kv (key, value, type, created_at, updated_at)
-                VALUES (?, ?, ?, COALESCE((SELECT created_at FROM kv WHERE key = ?), ?), ?)
+                INSERT INTO kv (key, value, type, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(key) DO NOTHING
+                RETURNING key
                 """,
-                (key, value_json, value_type, key, now, now),
-            )
+                (key, value_json, value_type, now, now),
+            ).fetchone()
+            created = inserted is not None
+            if not created:
+                conn.execute(
+                    "UPDATE kv SET value = ?, type = ?, updated_at = ? WHERE key = ?",
+                    (value_json, value_type, now, key),
+                )
 
             if ttl is not None:
                 expires_at = datetime.now(UTC).timestamp() + ttl
@@ -201,7 +226,7 @@ class Store(SQLiteBackend):
             raise
 
         self._journal_emit({"op": "set", "key": key, "value": value})
-        return existing is None
+        return created
 
     def get(self, key: str) -> Any | None:
         """Get value by key. Returns None if not found or expired."""
@@ -220,11 +245,15 @@ class Store(SQLiteBackend):
         return json.loads(row["value"])
 
     def delete(self, key: str) -> bool:
-        """Delete a key. Returns True if key existed."""
+        """Delete a key. Returns True if key existed.
+
+        kv_meta goes first: its FK to kv is enforced now, so deleting the
+        parent while the child row still exists is a constraint violation.
+        """
         conn = self._get_conn()
         try:
-            cur = conn.execute("DELETE FROM kv WHERE key = ?", (key,))
             conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
+            cur = conn.execute("DELETE FROM kv WHERE key = ?", (key,))
             self._commit()
         except Exception:
             self._rollback_failed_write()
@@ -239,7 +268,11 @@ class Store(SQLiteBackend):
         return self.get(key) is not None
 
     def keys(self, pattern: str = "*") -> list[str]:
-        """List all keys. Pattern matching with * wildcard."""
+        """List keys matching a pattern. Pattern matching with * wildcard.
+
+        Case-sensitive, like Redis KEYS: the connection runs with
+        `PRAGMA case_sensitive_like=ON`, so `USER:*` does not match `user:1`.
+        """
         conn = self._get_conn()
         if pattern == "*":
             rows = conn.execute("SELECT key FROM kv").fetchall()
@@ -304,8 +337,8 @@ class Store(SQLiteBackend):
                 if meta and meta["expires_at"]:
                     expires_at = datetime.fromisoformat(meta["expires_at"])
                     if datetime.now(UTC) > expires_at:
-                        conn.execute("DELETE FROM kv WHERE key = ?", (key,))
                         conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
+                        conn.execute("DELETE FROM kv WHERE key = ?", (key,))
                         row = None
             if row is not None:
                 current = json.loads(row["value"])
@@ -372,8 +405,37 @@ class Store(SQLiteBackend):
             self._journal_emit(payload)
 
     def mget(self, keys: list[str]) -> list[Any | None]:
-        """Get multiple values."""
-        return [self.get(key) for key in keys]
+        """Get multiple values in two batch queries.
+
+        Before this, mget() was `[self.get(key) for key in keys]` — two
+        statements per key (a kv_meta expiry probe plus the value read), so
+        1000 keys cost 2000 round-trips. Now one `key IN (...)` query for the
+        expired set and one for the values; the answer matches get() exactly,
+        expired keys are deleted like get() does (journal event included), and
+        the result keeps the order and duplicates of `keys`.
+        """
+        if not keys:
+            return []
+        conn = self._get_conn()
+        placeholders = ",".join("?" * len(keys))
+        now = datetime.now(UTC).isoformat()
+
+        expired = [
+            row["key"]
+            for row in conn.execute(
+                f"SELECT key FROM kv_meta WHERE key IN ({placeholders})"
+                " AND expires_at IS NOT NULL AND expires_at <= ?",
+                (*keys, now),
+            ).fetchall()
+        ]
+        for key in dict.fromkeys(expired):
+            self.delete(key)
+
+        rows = conn.execute(
+            f"SELECT key, value FROM kv WHERE key IN ({placeholders})", keys
+        ).fetchall()
+        values = {row["key"]: json.loads(row["value"]) for row in rows}
+        return [values.get(key) for key in keys]
 
     def sweep(self) -> int:
         """Delete expired keys. Returns count of removed keys."""
@@ -385,8 +447,8 @@ class Store(SQLiteBackend):
         )
         dead = [row["key"] for row in cur.fetchall()]
         for key in dead:
-            conn.execute("DELETE FROM kv WHERE key = ?", (key,))
             conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
+            conn.execute("DELETE FROM kv WHERE key = ?", (key,))
         self._commit()
         return len(dead)
 
@@ -394,8 +456,8 @@ class Store(SQLiteBackend):
         """Delete all keys. Returns count of deleted keys."""
         conn = self._get_conn()
         count = conn.execute("SELECT COUNT(*) FROM kv").fetchone()[0]
-        conn.execute("DELETE FROM kv")
         conn.execute("DELETE FROM kv_meta")
+        conn.execute("DELETE FROM kv")
         self._commit()
         return count
 

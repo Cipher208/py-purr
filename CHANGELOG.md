@@ -157,6 +157,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capped at `SCHEMA_VERSION`. `SCHEMA_VERSION` is a ceiling, never a claim:
   registering 3 would make a v2/v3 migration added later look applied and
   silently skip it.
+- A migration script now runs inside one transaction (pass-7 audit):
+  `executescript()` committed each statement implicitly, so a script that
+  failed half-way left the tables it had already created behind while the
+  version stayed 0 — and because those tables then existed, the same script
+  could never succeed on retry, making the database permanently unopenable.
+  A failure now rolls the whole script back.
+- `EventVersioner.migrate()` no longer mutates the event it is given
+  (pass-7 audit): it returns a deep copy. Rewriting `payload`/`version` in
+  place corrupted objects already held by `EventBus` history and event streams,
+  which breaks the immutability event sourcing relies on.
+- `RetryHandler` clamps the delay *after* applying jitter (pass-8): the
+  effective maximum was 1.5 × `max_delay`. The never-written `_pending` state
+  was removed.
+- A health check returning something that is neither `bool` nor `HealthStatus`
+  is reported as `UNHEALTHY` with the offending type in the message (pass-8):
+  the status used to be left unchanged, so a check returning `"ok"` silently
+  counted as neither healthy nor unhealthy.
 
 ### Added
 - `EventStream(..., max_events=..., max_age_seconds=...)` retention limits
@@ -175,6 +192,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("transaction committed, but N journal events failed to flush", data is
   durable), so a journal outage is no longer indistinguishable from a
   rollback. Failed payloads are collected and the rest still flushed.
+- `MigrationGapError` (`purr.versioning`, exported as `purr.MigrationGapError`)
+  — raised when a migration chain has a hole (pass-7 audit). A missing hop used
+  to `break` out of the loop and hand the consumer a pre-migration payload with
+  no signal at all.
+- Store schema v2: index `idx_kv_meta_expires` on `kv_meta(expires_at)`
+  (pass-8 audit). `sweep()` scanned the whole table: 3.13 ms → 0.005 ms per
+  sweep on 50k TTL rows.
+- `EventStream.append_many(events)` — atomic batch insert, ~10–15× faster than
+  per-event `append()`.
 
 ### Changed
 - `Store.incr()` emits its journal event after its own commit, matching
@@ -204,6 +230,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-thread connections and transaction flag: concurrent `transaction()`
   blocks in different threads no longer mix or drop each other's buffered
   journal events.
+- `EventStream` stores event timestamps in UTC and rejects an event dated more
+  than a day in the future (pass-7 audit). Retention compared timestamps as
+  text: an event carrying a `-05:00` offset was deleted as "old" the moment it
+  was written, and an event stamped `9999-12-31` was immortal, so
+  `max_age_seconds` could not bound growth.
+- `Store.set()` is one statement on create and two on overwrite (pass-8): the
+  `SELECT key ...` probe and the correlated `COALESCE((SELECT created_at ...))`
+  are gone. A single UPSERT with `RETURNING created_at` was rejected on purpose
+  — on Windows `datetime.now()` has a ~16 ms tick, so a create and an immediate
+  overwrite share a timestamp and the "did I create it?" flag would lie.
+- `Store.mget()` fetches in two batched queries instead of N×2 per-key calls
+  (pass-8): 1000 keys 9.65 ms → 2.84 ms, same semantics and ordering as
+  `[get(k) for k in keys]`.
+- Connection pragmas tuned (pass-8): `cache_size=-16000`, `mmap_size=256 MB`,
+  `temp_store=MEMORY`, `journal_size_limit=64 MB`; randomness: 10k random gets
+  on a 50k-key database went 130 ms → 92 ms.
+- `keys()` is case-sensitive, like Redis `KEYS` (pass-8): the connection sets
+  `PRAGMA case_sensitive_like=ON`, so `keys("USER:*")` no longer matches
+  `user:1`.
+- `PRAGMA foreign_keys` is now ON (pass-8): the schema declared foreign keys
+  that SQLite never enforced. Orphan rows are cleaned once at open (read-only
+  probe first, so a clean database still opens without a write lock), and
+  deletes are ordered child-first in `delete()`, `incr()` (expired branch),
+  `sweep()` and `flush()`, which the new constraint makes mandatory.
 
 ## [0.1.0] - 2026-10-07
 

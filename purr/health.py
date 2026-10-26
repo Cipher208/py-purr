@@ -75,6 +75,16 @@ class HealthChecker:
                 elif isinstance(result, bool):
                     status = HealthStatus.HEALTHY if result else HealthStatus.UNHEALTHY
                     self.update(name, status)
+                else:
+                    # A check that returns a truthy string or None used to be
+                    # ignored, so the component kept its previous status — a
+                    # broken check looked healthy forever.
+                    self.update(
+                        name,
+                        HealthStatus.UNHEALTHY,
+                        error=f"check returned {type(result).__name__}, "
+                        "expected bool or HealthStatus",
+                    )
             except Exception as e:
                 self.update(name, HealthStatus.UNHEALTHY, error=str(e))
 
