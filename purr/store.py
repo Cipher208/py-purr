@@ -228,7 +228,12 @@ class Store(SQLiteBackend):
         conn = self._get_conn()
         now = datetime.now(UTC).isoformat()
         own_txn = not self._in_transaction
-        if own_txn:
+        # A previous failed statement may have left an implicit transaction
+        # open on this connection (mset with an unserializable value, for
+        # instance). BEGIN on top of it raises "cannot start a transaction
+        # within a transaction"; the implicit one already gives us the write
+        # lock, so reuse it.
+        if own_txn and not conn.in_transaction:
             conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()

@@ -45,18 +45,26 @@ class SQLiteBackend:
 
         PRAGMA user_version is still kept (raised to the max applied
         version) for older-tooling compatibility.
+
+        Opening an already-migrated database performs no writes at all: the
+        registry row and user_version are only written when migrations are
+        pending or user_version still needs clamping. Before this, every open
+        ran CREATE TABLE IF NOT EXISTS + INSERT OR REPLACE, so a read-only
+        database failed with "attempt to write a readonly database" and a
+        database held by another writer blocked on the busy timeout.
         """
         conn = self._get_conn()
         engine = self.ENGINE_NAME or type(self).__name__
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS _purr_schema"
-            " (engine TEXT PRIMARY KEY, version INTEGER NOT NULL)"
-        )
-        row = conn.execute(
-            "SELECT version FROM _purr_schema WHERE engine = ?", (engine,)
-        ).fetchone()
+        try:
+            row = conn.execute(
+                "SELECT version FROM _purr_schema WHERE engine = ?", (engine,)
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            # Registry table not created yet (fresh file, or legacy db).
+            if "no such table" not in str(exc):
+                raise
+            row = None
         user_version = conn.execute("PRAGMA user_version").fetchone()[0] or 0
-        applied = 0
         if row is None:
             # No registry row: fresh engine, or legacy file (user_version > 0)
             # where the engine's true version is unknowable — apply all
@@ -64,19 +72,38 @@ class SQLiteBackend:
             pending = sorted(self.MIGRATIONS)
         else:
             pending = [v for v in sorted(self.MIGRATIONS) if v > row[0]]
-        for version in pending:
-            conn.executescript(self.MIGRATIONS[version])
-            applied += 1
-        registered = max(pending) if pending else (row[0] if row else 0)
-        conn.execute(
-            "INSERT OR REPLACE INTO _purr_schema (engine, version) VALUES (?, ?)",
-            (engine, registered),
-        )
-        if registered < self.SCHEMA_VERSION:
-            registered = self.SCHEMA_VERSION
-        if user_version < registered:
-            conn.execute(f"PRAGMA user_version={registered}")
-        conn.commit()
+        if not pending and user_version >= (row[0] if row else 0):
+            # Up to date and nothing to clamp: stay silent so the open works
+            # on a read-only file and does not need a write lock at all.
+            return 0
+        applied = 0
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS _purr_schema"
+                " (engine TEXT PRIMARY KEY, version INTEGER NOT NULL)"
+            )
+            for version in pending:
+                conn.executescript(self.MIGRATIONS[version])
+                applied += 1
+            registered = max(pending) if pending else (row[0] if row else 0)
+            conn.execute(
+                "INSERT OR REPLACE INTO _purr_schema (engine, version) VALUES (?, ?)",
+                (engine, registered),
+            )
+            if registered < self.SCHEMA_VERSION:
+                registered = self.SCHEMA_VERSION
+            if user_version < registered:
+                conn.execute(f"PRAGMA user_version={registered}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
+            if pending:
+                # Schema really is behind: the caller must not run unmatched.
+                raise
+            # Only the registry/clamp bookkeeping was rejected (read-only file,
+            # another writer holds the lock). The schema is already in place,
+            # so opening can continue.
         return applied
 
     def _get_conn(self) -> sqlite3.Connection:

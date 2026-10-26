@@ -102,6 +102,13 @@ class EventStream(SQLiteBackend):
         except sqlite3.IntegrityError as exc:
             conn.rollback()
             raise ValueError(f"duplicate event id (batch rolled back): {event.id}") from exc
+        except Exception:
+            # Any other failure (a payload that is not JSON serializable,
+            # for instance) must roll back too: otherwise the events already
+            # inserted stay in the open transaction and the next unrelated
+            # append() commits them, resurrecting the rejected batch.
+            conn.rollback()
+            raise
         conn.commit()
 
     def _insert(self, conn: sqlite3.Connection, event: Event) -> None:
@@ -267,7 +274,11 @@ class EventStream(SQLiteBackend):
                 (self._max_events,),
             )
             pruned += cur.rowcount
-        if pruned:
+        # DELETE opens an implicit transaction even when it matches no rows
+        # (rowcount 0): committing only "if pruned" left it open, pinning a
+        # RESERVED lock on the whole file and blocking every other writer
+        # until close(). Commit whenever the connection holds a transaction.
+        if conn.in_transaction:
             conn.commit()
         return pruned
 

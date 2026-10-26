@@ -57,6 +57,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README contracts aligned with actual behavior: saga is in-memory and its
   rollback covers previously completed steps only; TTL expiry is lazy;
   suite size updated.
+- `EventStream._prune()` now commits whenever the connection holds a
+  transaction, not only when rows were actually deleted (pass-3 regression):
+  the `DELETE`s open an implicit transaction even with `rowcount == 0`, so
+  with retention configured but nothing yet to prune, `maintain()` left a
+  `RESERVED` lock on the whole file — a second instance's `append()` failed
+  with `database is locked` after the 5 s busy timeout. A periodic maintainer
+  could pin the database forever.
+- `SQLiteBackend.run_migrations()` no longer writes when the schema is
+  already current (pass-3 regression): the registry `CREATE TABLE`/`INSERT OR
+  REPLACE` and the `user_version` clamp ran on every open, so an
+  already-migrated read-only database raised `attempt to write a readonly
+  database` and a concurrent opener waited out the 5 s busy timeout
+  (`database is locked`). Writes now happen only when migrations are pending
+  or `user_version` still needs clamping; if the database rejects that
+  bookkeeping while no migration is pending, opening continues. Cold-start
+  with 8 processes on a fresh file: 6/80 → 0/80 failures.
+- `EventStream.append_many()` rolls back on any exception, not just
+  `IntegrityError` (pass-3 regression): a mid-batch `TypeError` (payload not
+  JSON serializable) left the already-inserted events in an open transaction,
+  and the next unrelated `append()` committed them — the "rolled back" batch
+  reappeared. The `ValueError` contract for duplicate ids is unchanged.
+- `Store.incr()` issues `BEGIN IMMEDIATE` only when the connection is not
+  already in a transaction (pass-3 regression): after a failed `mset()`
+  (`TypeError`) or `set()` (huge TTL → `OSError`) the leftover implicit
+  transaction made `incr()` die with `cannot start a transaction within a
+  transaction`. It now reuses the implicit transaction and commits at the end.
 
 ### Added
 - `EventStream(..., max_events=..., max_age_seconds=...)` retention limits
