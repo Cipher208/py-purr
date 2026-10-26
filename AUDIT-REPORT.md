@@ -129,6 +129,20 @@ Coverage: **92%** (реальный прогон `uv run pytest --cov=purr --cov
 
 Композитный индекс снят с «не проверено» — замерен 2026-10-26, см. «Открытые зоны», пункт 7.
 
+## Исправлено и подтверждено (заход 4, 2026-10-26)
+
+Файлы: purr/event_stream.py, purr/store.py, purr/event.py, тесты event_stream/store/event_bus, CHANGELOG.md. Verifier-агент трижды завершился инфраструктурной ошибкой «empty stream», поэтому приёмку выполнил лид отдельными откатами и прогонами. Красный прогон ДО: **9 failed, 51 passed** на откате трёх production-файлов; после: **130 passed**, `ruff check purr` — All checks passed.
+
+- **P2 cursor ПРИНЯТ**: missing event id → явный `ValueError`; пустая выдача → `last_id=None`; чтение без cursor с начала сохранено.
+- **P2 retention ПРИНЯТ**: `max_events`/`max_age_seconds`, подрезка в maintain(), default без лимитов сохранён; курсоры не удаляются и сигнализируют ValueError после ротации.
+- **P2 mset ordering ПРИНЯТ**: journal emits after commit; независимая raw-sqlite проверка увидела обе записи `[2, 2]` в момент emit.
+- **P2 handler errors ПРИНЯТ**: optional `on_handler_error`, callback получает event+exception, callback exception не ломает dispatch, default silent сохранён.
+- **P2 journal buffer ПРИНЯТ**: `_journal_buffer` per-thread; независимая одновременная проверка дала разные list ids `[2603728094656, 2603728094336]`.
+
+Первый независимый probe ошибочно сравнил id списков после завершения потоков (адреса переиспользовались); повторный probe с одновременным удержанием объектов прошёл. Это не дефект фикса.
+
+**Итог после захода 4:** 5 P2 event-контурных дыр закрыты; осталось P2/P3 + интеграционные зоны (crash recovery, multiprocess contention, error-system consistency, lifecycle, PRAGMA tuning).
+
 ## Исправлено и подтверждено (заход 3, 2026-10-26)
 
 Файлы: purr/saga.py, purr/backend.py, по одной строке ENGINE_NAME в store/event_stream/state_machine, README.md, CHANGELOG.md; новые tests/test_saga_p1_fixes.py (4 теста), tests/test_backend_p1_fixes.py (4 теста). Приёмка выполнена лидом (спавн verifier'а дважды упал на инфраструктурной ошибке; лид — не автор правок): откат захода 3 → 6 failed по сути; независимое воспроизведение своим скриптом; полный прогон **118 passed**, ruff чист, старые тесты не тронуты (git diff --stat tests/ пуст по существующим файлам).
