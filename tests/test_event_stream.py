@@ -179,3 +179,56 @@ class TestRetention:
         report = stream.maintain()
         assert "pruned_events" not in report
         assert stream.count() == 5
+
+    def test_prune_keeps_newest_by_read_order(self, tmp_path):
+        """Retention must keep what read() considers newest: (timestamp, rowid)."""
+        from datetime import UTC, datetime, timedelta
+
+        stream = EventStream(tmp_path / "ev.db", max_events=1)
+        now = datetime.now(UTC)
+        newer = Event(type=EventType.SYSTEM, topic="t", payload={"k": "newer"}, timestamp=now)
+        older = Event(
+            type=EventType.SYSTEM,
+            topic="t",
+            payload={"k": "older"},
+            timestamp=now - timedelta(days=1),
+        )
+        # Producer writes out of timestamp order (newer first).
+        stream.append(newer)
+        stream.append(older)
+        stream.maintain()
+
+        remaining = stream.read(limit=10)[0]
+        assert [e.payload["k"] for e in remaining] == ["newer"]
+        # A consumer whose cursor sat on the newest event keeps working.
+        events, last_id = stream.read(cursor=newer.id)
+        assert events == []
+        assert last_id is None
+
+    def test_reset_cursor_after_prune(self, tmp_path):
+        stream = EventStream(tmp_path / "ev.db", max_events=3)
+        events = [Event(type=EventType.SYSTEM, topic="t", payload={"i": i}) for i in range(5)]
+        stream.append_many(events)
+        stream.maintain()
+
+        pruned_id = events[0].id
+        assert [e.id for e in stream.read(limit=10)[0]] == [e.id for e in events[2:]]
+
+        stream.set_cursor("c", pruned_id)
+        with pytest.raises(ValueError):
+            stream.read(cursor=stream.get_cursor("c"))
+
+        assert stream.reset_cursor("c") is True
+        assert stream.get_cursor("c") is None
+
+        restarted = stream.read()[0]
+        assert [e.id for e in restarted] == [e.id for e in events[2:]]
+
+        assert stream.reset_cursor("c") is False
+
+    def test_read_missing_cursor_message_mentions_reset(self, stream):
+        e = Event(type=EventType.SYSTEM, topic="t", payload={})
+        stream.append(e)
+        with pytest.raises(ValueError) as excinfo:
+            stream.read(cursor="nonexistent-id")
+        assert "reset_cursor" in str(excinfo.value)

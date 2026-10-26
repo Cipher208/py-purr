@@ -158,7 +158,11 @@ class EventStream(SQLiteBackend):
         if cursor:
             row = conn.execute("SELECT 1 FROM events WHERE id = ?", (cursor,)).fetchone()
             if row is None:
-                raise ValueError(f"cursor references missing event id: {cursor}")
+                raise ValueError(
+                    f"cursor references missing event id: {cursor} "
+                    "(retention may have pruned it; call reset_cursor(name) "
+                    "to restart from the beginning)"
+                )
 
         query = "SELECT * FROM events"
         params: list[Any] = []
@@ -203,6 +207,17 @@ class EventStream(SQLiteBackend):
         )
         conn.commit()
 
+    def reset_cursor(self, name: str) -> bool:
+        """Delete a named cursor.
+
+        Call after a cursor was invalidated by retention; the consumer will
+        read from the beginning. Returns True if the cursor existed.
+        """
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM cursors WHERE name = ?", (name,))
+        conn.commit()
+        return cur.rowcount > 0
+
     def count(self, topic: str | None = None) -> int:
         """Count events."""
         conn = self._get_conn()
@@ -242,10 +257,13 @@ class EventStream(SQLiteBackend):
         """Host-driven maintenance: checkpoint, verify, optional retention.
 
         When max_events/max_age_seconds were configured at construction,
-        maintain() prunes the log (by rowid DESC for max_events, by
-        timestamp for max_age_seconds). Cursors pointing at pruned events
-        are left in place — reading with such a cursor now raises ValueError.
-        By default (no limits) the replay log is never pruned.
+        maintain() prunes the log (for max_events it keeps the newest
+        events in read order, i.e. by (timestamp, rowid) DESC; for
+        max_age_seconds it drops events older than the cutoff). Cursors
+        pointing at pruned events are left in place — reading with such a
+        cursor now raises ValueError; call reset_cursor(name) to drop it and
+        restart that consumer from the beginning. By default (no limits) the
+        replay log is never pruned.
         """
         report: dict[str, Any] = {
             "events": self.count(),
@@ -265,10 +283,14 @@ class EventStream(SQLiteBackend):
             cur = conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
             pruned += cur.rowcount
         if self._max_events is not None:
+            # Keep the newest events in the same order read() walks them
+            # (timestamp ASC, rowid ASC). Ordering by rowid alone would
+            # discard the truly newest event when a producer writes out of
+            # timestamp order, stranding that consumer's cursor.
             cur = conn.execute(
                 """
                 DELETE FROM events WHERE id NOT IN (
-                    SELECT id FROM events ORDER BY rowid DESC LIMIT ?
+                    SELECT id FROM events ORDER BY timestamp DESC, rowid DESC LIMIT ?
                 )
                 """,
                 (self._max_events,),

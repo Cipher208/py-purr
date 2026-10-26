@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipping each other's migrations (P1-8). `PRAGMA user_version` is still
   raised for compatibility; legacy databases (user_version > 0, no registry)
   are upgraded by re-applying migrations idempotently.
+- `EventStream.reset_cursor(name) -> bool` — drops a named cursor and returns
+  whether it existed. Retention leaves cursors pointing at pruned events in
+  place, which makes `read(cursor=...)` raise `ValueError` with no recovery
+  through the API; `reset_cursor()` is the documented way to restart that
+  consumer from the beginning.
 
 ### Changed
 - `incr()`/`decr()` are atomic (own `BEGIN IMMEDIATE` when outside
@@ -73,6 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or `user_version` still needs clamping; if the database rejects that
   bookkeeping while no migration is pending, opening continues. Cold-start
   with 8 processes on a fresh file: 6/80 → 0/80 failures.
+- `EventStream._prune()` keeps the newest events in the order `read()` walks
+  them. Retention now ranks by `(timestamp, rowid)` DESC instead of `rowid`
+  alone (pass-4 audit): with a producer writing out of timestamp order,
+  `max_events` discarded the *newer* event and kept the older one, so a
+  consumer positioned on the newest event got a permanent `ValueError` even
+  though its cursor pointed at an event that should have survived.
 - `EventStream.append_many()` rolls back on any exception, not just
   `IntegrityError` (pass-3 regression): a mid-batch `TypeError` (payload not
   JSON serializable) left the already-inserted events in an open transaction,
