@@ -31,7 +31,7 @@ from .retry import RetryConfig, RetryHandler
 from .saga import Saga, SagaStatus
 from .state_machine import State, StateMachine, Transition
 from .store import JournalFlushError, Store
-from .versioning import EventVersioner
+from .versioning import EventVersioner, MigrationGapError
 
 __version__ = "0.1.0"
 
@@ -49,6 +49,7 @@ __all__ = [
     "EventType",
     "EventStream",
     "EventVersioner",
+    "MigrationGapError",
     "HealthChecker",
     "HealthStatus",
     "Middleware",

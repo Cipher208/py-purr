@@ -1,5 +1,7 @@
 """Tests for PURR EventStream."""
 
+from datetime import UTC, datetime, timedelta, timezone
+
 import pytest
 
 from purr import Event, EventStream, EventType
@@ -235,6 +237,59 @@ class TestRetention:
         with pytest.raises(ValueError) as excinfo:
             stream.read(cursor="nonexistent-id")
         assert "reset_cursor" in str(excinfo.value)
+
+
+class TestTimestampNormalization:
+    """Retention compares timestamp as TEXT, so stored values must be UTC."""
+
+    def test_prune_respects_timezone_offsets(self, tmp_path):
+        stream = EventStream(tmp_path / "ev.db", max_age_seconds=600)
+        now = datetime.now(UTC)
+        negative_offset = Event(
+            type=EventType.SYSTEM,
+            topic="t",
+            payload={"k": "west"},
+            timestamp=now.astimezone(timezone(timedelta(hours=-5))),
+        )
+        utc = Event(type=EventType.SYSTEM, topic="t", payload={"k": "utc"}, timestamp=now)
+        stream.append_many([negative_offset, utc])
+
+        report = stream.maintain()
+        assert report["pruned_events"] == 0
+        assert stream.count() == 2
+        assert {e.payload["k"] for e in stream.read(limit=10)[0]} == {"west", "utc"}
+
+    def test_future_timestamp_rejected(self, stream):
+        future = datetime.now(UTC) + timedelta(days=2)
+        event = Event(type=EventType.SYSTEM, topic="t", payload={}, timestamp=future)
+        with pytest.raises(ValueError, match="more than 1 day in the future"):
+            stream.append(event)
+
+        batch = [Event(type=EventType.SYSTEM, topic="t", payload={}, timestamp=future)]
+        with pytest.raises(ValueError, match="more than 1 day in the future"):
+            stream.append_many(batch)
+
+        assert stream.count() == 0
+
+    def test_past_timestamp_still_stored(self, stream):
+        old = Event(
+            type=EventType.SYSTEM,
+            topic="t",
+            payload={},
+            timestamp=datetime.now(UTC) - timedelta(days=30),
+        )
+        stream.append(old)
+        assert stream.count() == 1
+        assert stream.read()[0][0].timestamp < datetime.now(UTC) - timedelta(days=29)
+
+    def test_default_utc_normalization(self, stream):
+        positive_offset = datetime.now(UTC).astimezone(timezone(timedelta(hours=5)))
+        event = Event(type=EventType.SYSTEM, topic="t", payload={}, timestamp=positive_offset)
+        stream.append(event)
+
+        stored = stream._get_conn().execute("SELECT timestamp FROM events").fetchone()[0]
+        assert stored.endswith("+00:00")
+        assert stream.read()[0][0].timestamp == positive_offset
 
 
 class TestCursorReplaySafety:

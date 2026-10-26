@@ -96,13 +96,28 @@ class EventStream(SQLiteBackend):
         2: "CREATE INDEX IF NOT EXISTS idx_events_topic_ts ON events(topic, timestamp);",
     }
 
+    def _validate_timestamp(self, event: Event) -> None:
+        """Reject events stamped far in the future.
+
+        Retention compares the stored timestamp as TEXT against a UTC cutoff,
+        so an event dated year 9999 never falls below it and can never be
+        pruned. One day of slack tolerates clock skew between producers.
+        """
+        limit = datetime.now(UTC) + timedelta(days=1)
+        if event.timestamp.astimezone(UTC) > limit:
+            raise ValueError(
+                f"event timestamp is more than 1 day in the future: {event.timestamp.isoformat()}"
+            )
+
     def append(self, event: Event) -> None:
         """Append an event to the stream.
 
         The stream is append-only: appending an event whose id already exists
         raises ValueError("duplicate event id: ...") and leaves the original
-        event untouched.
+        event untouched. A timestamp more than one day in the future is
+        rejected up front.
         """
+        self._validate_timestamp(event)
         conn = self._get_conn()
         try:
             self._insert(conn, event)
@@ -120,7 +135,11 @@ class EventStream(SQLiteBackend):
         Atomic: if any event id already exists in the stream (or duplicates
         another id in the batch), ValueError("duplicate event id: ...") is
         raised and the whole batch is rolled back — no event is written.
+        Timestamps more than one day in the future are rejected before any
+        insert is attempted.
         """
+        for event in events:
+            self._validate_timestamp(event)
         conn = self._get_conn()
         try:
             for event in events:
@@ -138,7 +157,13 @@ class EventStream(SQLiteBackend):
         conn.commit()
 
     def _insert(self, conn: sqlite3.Connection, event: Event) -> None:
-        """Shared INSERT used by append/append_many (no commit here)."""
+        """Shared INSERT used by append/append_many (no commit here).
+
+        timestamps are stored normalized to UTC: read() orders and retention
+        filters compare the TEXT column, so a non-UTC offset
+        ("...T11:13-05:00") would sort before a UTC "now" and be pruned as
+        old while a future date would never be pruned.
+        """
         conn.execute(
             """
             INSERT INTO events
@@ -151,7 +176,7 @@ class EventStream(SQLiteBackend):
                 event.topic,
                 json.dumps(event.payload),
                 event.correlation_id,
-                event.timestamp.isoformat(),
+                event.timestamp.astimezone(UTC).isoformat(),
                 event.version,
                 event.source,
                 json.dumps(event.metadata),
