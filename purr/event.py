@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import uuid
 from collections.abc import Callable, Coroutine
@@ -37,6 +38,8 @@ class Event(BaseModel):
 
 
 EventHandler = Callable[[Event], Coroutine[Any, Any, None]]
+"""Async handler. Sync handlers (plain functions returning a non-awaitable)
+are also accepted by subscribe() and dispatched directly."""
 
 
 class EventBus:
@@ -73,10 +76,42 @@ class EventBus:
                 await handler(event)
 
     def publish_sync(self, event: Event) -> None:
-        """Publish synchronously (for non-async contexts)."""
+        """Publish synchronously (for non-async contexts).
+
+        Sync handlers are invoked directly. Async handlers are executed via
+        asyncio.run() — allowed only when no event loop is running; calling
+        publish_sync with async handlers inside a running loop raises
+        RuntimeError("use await bus.publish() inside async context").
+        Handler exceptions are suppressed, matching async publish().
+        """
         self._history.append(event)
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history :]
+
+        handlers = self._handlers.get(event.topic, [])
+        wildcard_handlers = self._handlers.get("*", [])
+
+        coros: list[Coroutine[Any, Any, None]] = []
+        for handler in handlers + wildcard_handlers:
+            # Don't let handler errors break the bus
+            with contextlib.suppress(Exception):
+                result = handler(event)
+                if result is not None and hasattr(result, "__await__"):
+                    coros.append(result)
+
+        if not coros:
+            return
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            for coro in coros:
+                with contextlib.suppress(Exception):
+                    asyncio.run(coro)
+        else:
+            for coro in coros:
+                coro.close()
+            raise RuntimeError("use await bus.publish() inside async context")
 
     def get_history(self, topic: str | None = None, limit: int = 100) -> list[Event]:
         """Get event history."""
