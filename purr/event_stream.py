@@ -137,7 +137,7 @@ class EventStream(SQLiteBackend):
         cursor: str | None = None,
         topic: str | None = None,
         limit: int = 100,
-    ) -> tuple[list[Event], str]:
+    ) -> tuple[list[Event], str | None]:
         """Read events from the stream.
 
         Args:
@@ -151,7 +151,10 @@ class EventStream(SQLiteBackend):
 
         Returns:
             Tuple of (events, last_event_id). last_event_id is None when
-            there are no new events (cursor need not be advanced).
+            there is nothing new — do NOT write it back, guard the write-back
+            with `if last_id:`. set_cursor(name, None) is rejected precisely
+            because a NULL cursor reads from the beginning of the stream and
+            would replay every event.
         """
         conn = self._get_conn()
 
@@ -196,7 +199,17 @@ class EventStream(SQLiteBackend):
         return row["last_event_id"] if row else None
 
     def set_cursor(self, name: str, event_id: str) -> None:
-        """Set cursor position."""
+        """Set cursor position.
+
+        event_id must be a real event id: an empty id (None or "") would be
+        stored as NULL, and read(cursor=None) reads from the beginning — so
+        far from being a no-op it silently replays the whole stream. Use
+        reset_cursor() to clear a cursor on purpose.
+        """
+        if not event_id:
+            raise ValueError(
+                "set_cursor requires an event id; use reset_cursor(name) to clear the cursor"
+            )
         conn = self._get_conn()
         conn.execute(
             """

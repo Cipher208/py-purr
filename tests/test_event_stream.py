@@ -232,3 +232,40 @@ class TestRetention:
         with pytest.raises(ValueError) as excinfo:
             stream.read(cursor="nonexistent-id")
         assert "reset_cursor" in str(excinfo.value)
+
+
+class TestCursorReplaySafety:
+    """A None last_id written back as a cursor silently replays the stream."""
+
+    def test_set_cursor_rejects_none_and_empty(self, stream):
+        for bad in (None, ""):
+            with pytest.raises(ValueError, match="reset_cursor"):
+                stream.set_cursor("c", bad)  # type: ignore[arg-type]
+
+        assert stream.get_cursor("c") is None
+        rows = stream._get_conn().execute("SELECT COUNT(*) FROM cursors").fetchone()[0]
+        assert rows == 0
+
+    def test_read_annotation_allows_none(self, stream):
+        """Pin the documented consumer loop: never write back a None last_id."""
+        e1 = Event(type=EventType.SYSTEM, topic="t", payload={})
+        stream.append(e1)
+
+        events, last_id = stream.read(cursor=stream.get_cursor("my-consumer"))
+        assert [ev.id for ev in events] == [e1.id]
+        assert last_id == e1.id
+        if last_id:
+            stream.set_cursor("my-consumer", last_id)
+
+        # Nothing new: last_id is None — guarded write-back leaves the cursor alone.
+        events, last_id = stream.read(cursor=stream.get_cursor("my-consumer"))
+        assert events == []
+        assert last_id is None
+        if last_id:
+            stream.set_cursor("my-consumer", last_id)
+        assert stream.get_cursor("my-consumer") == e1.id
+
+        # Third poll must not replay the already-delivered event.
+        events, last_id = stream.read(cursor=stream.get_cursor("my-consumer"))
+        assert events == []
+        assert last_id is None

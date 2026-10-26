@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Saga `execute()` resets per-step state, so re-executing a saga never fires
   compensations left over from a previous run; compensation now also removes
   the keys a compensated step wrote from `saga.data` (P1-6).
+- `EventStream.read()` returns `last_event_id=None` when there is nothing new
+  (annotation is now `tuple[list[Event], str | None]`); the documented consumer
+  loop guards the write-back with `if last_id:`. Writing that `None` back used
+  to store SQL `NULL`, which read from the beginning of the stream — an endless
+  replay loop.
+- `EventStream.set_cursor()` rejects an empty/`None` event id with
+  `ValueError`: use `reset_cursor(name)` to clear a cursor on purpose.
 
 ### Fixed
 - P1-1: failed `BEGIN IMMEDIATE` no longer poisons the transaction flag

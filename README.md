@@ -148,9 +148,14 @@ stream = EventStream("events.db")
 # Publish events
 stream.append(Event(type=EventType.SYSTEM, topic="user_signups", payload={"user_id": 42}))
 
-# Read events, track consumer cursor
-events, last_id = stream.read(topic="user_signups", limit=50)
-stream.set_cursor("my-consumer", last_id)
+# Read events, track consumer cursor.
+# last_id is None when there is nothing new: guard the write-back, otherwise
+# an empty poll would clear the cursor and replay the stream from the start.
+events, last_id = stream.read(
+    cursor=stream.get_cursor("my-consumer"), topic="user_signups", limit=50
+)
+if last_id:
+    stream.set_cursor("my-consumer", last_id)
 ```
 
 ---
