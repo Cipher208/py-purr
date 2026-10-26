@@ -101,6 +101,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`TypeError`) or `set()` (huge TTL → `OSError`) the leftover implicit
   transaction made `incr()` die with `cannot start a transaction within a
   transaction`. It now reuses the implicit transaction and commits at the end.
+- Saga write tracking no longer compares old and new values with a bare `!=`
+  and no longer relies on a shallow snapshot: a step writing an array-like
+  value (`numpy.ndarray`, `pandas.Series`) used to raise `ValueError: truth
+  value ... is ambiguous` *inside* the step's own try block, so a successful
+  step was marked `failed`, the saga compensated and the caller got that
+  `ValueError` instead of the real failure. Steps now record the previous
+  values of the keys they touched (`SagaStep.restore`) from a deep snapshot,
+  so in-place nested mutations are rolled back too. Rollback restores the old
+  value of overwritten keys and re-adds keys the step deleted, instead of
+  `pop()`-ing them out of `saga.data`.
 
 ### Added
 - `EventStream(..., max_events=..., max_age_seconds=...)` retention limits

@@ -101,7 +101,7 @@ sm.restore_snapshot()
 
 ### 3. Sagas (Compensating Transactions)
 
-Execute multi-step distributed operations safely. If any step fails, PURR automatically executes compensating rollback actions of previously completed steps in reverse order and removes their written data. Note: the failed step's own compensation is not run — handle it inside the action itself. Sagas are in-memory: if the process dies, all saga state is lost.
+Execute multi-step distributed operations safely. If any step fails, PURR automatically executes compensating rollback actions of previously completed steps in reverse order and rolls their data back: keys the step added are removed, keys it overwrote or deleted get their previous values back. Note: the failed step's own compensation is not run — handle it inside the action itself. Sagas are in-memory: if the process dies, all saga state is lost.
 
 ```python
 import asyncio
