@@ -97,10 +97,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the next unrelated `append()` committed them — the "rolled back" batch
   reappeared. The `ValueError` contract for duplicate ids is unchanged.
 - `Store.incr()` issues `BEGIN IMMEDIATE` only when the connection is not
-  already in a transaction (pass-3 regression): after a failed `mset()`
-  (`TypeError`) or `set()` (huge TTL → `OSError`) the leftover implicit
-  transaction made `incr()` die with `cannot start a transaction within a
-  transaction`. It now reuses the implicit transaction and commits at the end.
+  already in a transaction (pass-3 regression): a leftover implicit
+  transaction — a raw write through the shared connection, or, before the
+  pass-4 fix below, a failed `mset()`/`set()` — made `incr()` die with `cannot
+  start a transaction within a transaction`. It now reuses the implicit
+  transaction and commits at the end.
+- `Store.set()`, `mset()` and `delete()` roll back a partially applied write
+  before re-raising (pass-4 audit): a `TypeError` while serializing the
+  second value of `mset()` or an `OSError` from a huge `ttl` in `set()` used
+  to leave the
+  half-written rows in an open implicit transaction holding a `RESERVED` lock,
+  and the next unrelated `commit()` made them durable — `set("good", 1)` plus
+  `set("bad", object())` resurrected `good`. Inside `transaction()` the
+  rollback is left to the context manager, whose `finally` already handles it;
+  a caller that catches the error and commits anyway still commits that op's
+  partial rows, because per-op savepoints are not part of the no-nesting
+  contract.
 - Saga write tracking no longer compares old and new values with a bare `!=`
   and no longer relies on a shallow snapshot: a step writing an array-like
   value (`numpy.ndarray`, `pandas.Series`) used to raise `ValueError: truth
@@ -123,8 +135,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exception being silently swallowed. Default `None` keeps the historical
   silent behavior. Exceptions in the callback itself are swallowed so the
   dispatcher never breaks.
+- `JournalFlushError` (`purr.store`, exported as `purr.JournalFlushError`) —
+  raised by `transaction()` when the commit succeeded but some buffered journal
+  events could not be written (pass-4 audit). The message says so explicitly
+  ("transaction committed, but N journal events failed to flush", data is
+  durable), so a journal outage is no longer indistinguishable from a
+  rollback. Failed payloads are collected and the rest still flushed.
 
 ### Changed
+- `Store.incr()` emits its journal event after its own commit, matching
+  `set()`/`mset()`/`delete()` (pass-4 audit): the event used to be appended
+  inside the write transaction, so subscribers saw data that was not committed
+  yet, and on a shared file (`Store(db, journal=EventStream(db))`) `incr()`
+  waited out the 5 s busy timeout on its own `RESERVED` lock and failed with
+  `database is locked` while `set()` worked. Inside `transaction()` the event
+  is still buffered until the block commits.
+- `Store.transaction()` flushes the journal after the commit and outside the
+  rollback path (pass-4 audit): a failing flush no longer drops the caller into
+  a rollback branch that cannot undo anything. Every buffered event is
+  attempted — one rejected event no longer drops the rest — and partial loss
+  raises `JournalFlushError`.
 - `EventStream.read()` cursor semantics (P2-1): reading with a cursor id
   that does not exist in the stream now raises
   `ValueError("cursor references missing event id: ...")` — previously it

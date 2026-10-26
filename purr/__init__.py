@@ -30,7 +30,7 @@ from .middleware import (
 from .retry import RetryConfig, RetryHandler
 from .saga import Saga, SagaStatus
 from .state_machine import State, StateMachine, Transition
-from .store import Store
+from .store import JournalFlushError, Store
 from .versioning import EventVersioner
 
 __version__ = "0.1.0"
@@ -38,6 +38,7 @@ __version__ = "0.1.0"
 __all__ = [
     "SQLiteBackend",
     "Store",
+    "JournalFlushError",
     "StateMachine",
     "State",
     "Transition",

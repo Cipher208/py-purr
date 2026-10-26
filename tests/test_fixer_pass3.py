@@ -144,18 +144,22 @@ def test_append_many_atomic_on_any_error(tmp_path):
 
 
 def test_incr_survives_leftover_implicit_transaction(tmp_path):
-    """incr() after a failed mset() must work, not raise "transaction within a transaction".
+    """incr() must reuse a leftover implicit transaction, not BEGIN on top of it.
 
-    mset() serializes values inside the loop without a rollback, so a
-    TypeError from an unserializable value leaves the connection in an
-    implicit transaction. incr() then issued BEGIN IMMEDIATE unconditionally
-    (own_txn tracks only transaction()) and died before touching the data.
+    A raw write through the shared connection (the same state a failed
+    statement used to leave behind) opens an implicit transaction. incr()
+    then issued BEGIN IMMEDIATE unconditionally (own_txn tracks only
+    transaction()) and died with "cannot start a transaction within a
+    transaction" before touching the data.
     """
     store = Store(tmp_path / "store.db")
     try:
-        with pytest.raises(TypeError):
-            store.mset({"good": 1, "bad": object()})
-        assert store._get_conn().in_transaction is True
+        conn = store._get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO kv (key, value, type, created_at, updated_at)"
+            " VALUES ('leftover', '1', 'int', 'now', 'now')"
+        )
+        assert conn.in_transaction is True
 
         assert store.incr("c") == 1
         assert store.get("c") == 1

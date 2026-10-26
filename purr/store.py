@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,15 @@ from .event import Event, EventType
 
 if TYPE_CHECKING:
     from .event_stream import EventStream
+
+
+class JournalFlushError(RuntimeError):
+    """The data committed, but some journal events could not be written.
+
+    Raised after the commit, never instead of it: the caller is told that the
+    transaction is durable and only the journal is incomplete, so a failed
+    flush cannot be mistaken for a rollback.
+    """
 
 
 class Store(SQLiteBackend):
@@ -57,23 +67,58 @@ class Store(SQLiteBackend):
         self._journal.append(Event(type=EventType.STORE, topic="store", payload=payload))
 
     def _journal_flush(self) -> None:
-        """Write buffered mutation events after transaction commit."""
+        """Write buffered mutation events after transaction commit.
+
+        Every event is attempted even if an earlier one fails — one rejected
+        event must not silently drop the rest. Partial loss is reported with
+        JournalFlushError: the data is committed either way, so this can never
+        be presented as a rollback.
+        """
         if self._journal is None:
             return
-        for payload in self._journal_buffer:
-            self._journal.append(Event(type=EventType.STORE, topic="store", payload=payload))
+        buffered = list(self._journal_buffer)
         self._journal_buffer.clear()
+        failed: list[dict[str, Any]] = []
+        last_error: Exception | None = None
+        for payload in buffered:
+            try:
+                self._journal.append(Event(type=EventType.STORE, topic="store", payload=payload))
+            except Exception as exc:
+                failed.append(payload)
+                last_error = exc
+        if failed:
+            raise JournalFlushError(
+                f"transaction committed, but {len(failed)} journal events failed to flush; "
+                "data is durable, only the journal is incomplete "
+                f"(lost keys: {[p.get('key') for p in failed]})"
+            ) from last_error
 
     def _commit(self) -> None:
         """Commit unless inside an explicit transaction() block."""
         if not self._in_transaction:
             self._get_conn().commit()
 
+    def _rollback_failed_write(self) -> None:
+        """Undo a partly applied mutation, unless transaction() owns it.
+
+        Inside transaction() the partial rows belong to the caller's atomic
+        block: the context manager rolls back (and drops buffered journal
+        events) itself, so rolling back here would hide writes the caller may
+        still intend to commit after catching the error.
+        """
+        if self._in_transaction:
+            return
+        with contextlib.suppress(sqlite3.Error):
+            self._get_conn().rollback()
+
     @contextlib.contextmanager
     def transaction(self) -> Iterator[Store]:
         """Atomic multi-op block. Commits on clean exit, rolls back on error.
 
         No nesting. Inner per-op commits are deferred until the block ends.
+        Journal events are flushed after the commit, outside the rollback
+        path: a flush failure raises JournalFlushError (the data is already
+        durable) instead of looking like a rollback.
         """
         if self._in_transaction:
             raise RuntimeError("nested transaction() is not supported")
@@ -87,13 +132,13 @@ class Store(SQLiteBackend):
         try:
             yield self
             conn.commit()
-            self._journal_flush()
         except Exception:
             conn.rollback()
             self._journal_buffer.clear()
             raise
         finally:
             self._in_transaction = False
+        self._journal_flush()
 
     def _init_db(self) -> None:
         self.run_migrations()
@@ -118,33 +163,43 @@ class Store(SQLiteBackend):
     }
 
     def set(self, key: str, value: Any, ttl: float | None = None) -> bool:
-        """Set a key-value pair. Returns True if new, False if updated."""
+        """Set a key-value pair. Returns True if new, False if updated.
+
+        A failure part-way through (unserializable value, ttl overflow) rolls
+        the partial write back: no half-applied row survives to be committed
+        by the next unrelated write.
+        """
         conn = self._get_conn()
         now = datetime.now(UTC).isoformat()
         value_json = json.dumps(value)
         value_type = type(value).__name__
 
-        existing = conn.execute("SELECT key FROM kv WHERE key = ?", (key,)).fetchone()
+        try:
+            existing = conn.execute("SELECT key FROM kv WHERE key = ?", (key,)).fetchone()
 
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO kv (key, value, type, created_at, updated_at)
-            VALUES (?, ?, ?, COALESCE((SELECT created_at FROM kv WHERE key = ?), ?), ?)
-            """,
-            (key, value_json, value_type, key, now, now),
-        )
-
-        if ttl is not None:
-            expires_at = datetime.now(UTC).timestamp() + ttl
-            expires_str = datetime.fromtimestamp(expires_at, tz=UTC).isoformat()
             conn.execute(
-                "INSERT OR REPLACE INTO kv_meta (key, expires_at) VALUES (?, ?)",
-                (key, expires_str),
+                """
+                INSERT OR REPLACE INTO kv (key, value, type, created_at, updated_at)
+                VALUES (?, ?, ?, COALESCE((SELECT created_at FROM kv WHERE key = ?), ?), ?)
+                """,
+                (key, value_json, value_type, key, now, now),
             )
-        else:
-            conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
 
-        self._commit()
+            if ttl is not None:
+                expires_at = datetime.now(UTC).timestamp() + ttl
+                expires_str = datetime.fromtimestamp(expires_at, tz=UTC).isoformat()
+                conn.execute(
+                    "INSERT OR REPLACE INTO kv_meta (key, expires_at) VALUES (?, ?)",
+                    (key, expires_str),
+                )
+            else:
+                conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
+
+            self._commit()
+        except Exception:
+            self._rollback_failed_write()
+            raise
+
         self._journal_emit({"op": "set", "key": key, "value": value})
         return existing is None
 
@@ -167,9 +222,13 @@ class Store(SQLiteBackend):
     def delete(self, key: str) -> bool:
         """Delete a key. Returns True if key existed."""
         conn = self._get_conn()
-        cur = conn.execute("DELETE FROM kv WHERE key = ?", (key,))
-        conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
-        self._commit()
+        try:
+            cur = conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+            conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
+            self._commit()
+        except Exception:
+            self._rollback_failed_write()
+            raise
         deleted = cur.rowcount > 0
         if deleted:
             self._journal_emit({"op": "delete", "key": key})
@@ -228,11 +287,11 @@ class Store(SQLiteBackend):
         conn = self._get_conn()
         now = datetime.now(UTC).isoformat()
         own_txn = not self._in_transaction
-        # A previous failed statement may have left an implicit transaction
-        # open on this connection (mset with an unserializable value, for
-        # instance). BEGIN on top of it raises "cannot start a transaction
-        # within a transaction"; the implicit one already gives us the write
-        # lock, so reuse it.
+        # A previous statement may have left an implicit transaction open on
+        # this connection (a raw write run through _get_conn(), for instance).
+        # BEGIN on top of it raises "cannot start a transaction within a
+        # transaction"; the implicit one already gives us the write lock, so
+        # reuse it.
         if own_txn and not conn.in_transaction:
             conn.execute("BEGIN IMMEDIATE")
         try:
@@ -265,13 +324,17 @@ class Store(SQLiteBackend):
                     (key, json.dumps(amount), now, now),
                 )
             # kv_meta untouched for live keys: TTL preserved (P1-4).
-            self._journal_emit({"op": "set", "key": key, "value": new_val})
         except Exception:
             if own_txn:
                 conn.rollback()
             raise
         if own_txn:
             conn.commit()
+        # Emitted after the commit, like set/mset: a journal subscriber must
+        # never see the event before the data (and on a shared file the emit
+        # would otherwise block on this connection's own RESERVED lock).
+        # Inside transaction() the event is buffered until the block commits.
+        self._journal_emit({"op": "set", "key": key, "value": new_val})
         return new_val
 
     def decr(self, key: str, amount: int = 1) -> int:
@@ -283,22 +346,28 @@ class Store(SQLiteBackend):
 
         Journal events are emitted after the commit (same ordering as
         set/delete), so journal consumers never observe uncommitted data.
+        A failure while serializing or writing any key rolls back the keys
+        written so far.
         """
         conn = self._get_conn()
         now = datetime.now(UTC).isoformat()
         journal_payloads: list[dict[str, Any]] = []
-        for key, value in mapping.items():
-            value_json = json.dumps(value)
-            value_type = type(value).__name__
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO kv (key, value, type, created_at, updated_at)
-                VALUES (?, ?, ?, COALESCE((SELECT created_at FROM kv WHERE key = ?), ?), ?)
-                """,
-                (key, value_json, value_type, key, now, now),
-            )
-            journal_payloads.append({"op": "set", "key": key, "value": value})
-        self._commit()
+        try:
+            for key, value in mapping.items():
+                value_json = json.dumps(value)
+                value_type = type(value).__name__
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO kv (key, value, type, created_at, updated_at)
+                    VALUES (?, ?, ?, COALESCE((SELECT created_at FROM kv WHERE key = ?), ?), ?)
+                    """,
+                    (key, value_json, value_type, key, now, now),
+                )
+                journal_payloads.append({"op": "set", "key": key, "value": value})
+            self._commit()
+        except Exception:
+            self._rollback_failed_write()
+            raise
         for payload in journal_payloads:
             self._journal_emit(payload)
 
