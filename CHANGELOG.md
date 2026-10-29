@@ -254,6 +254,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   probe first, so a clean database still opens without a write lock), and
   deletes are ordered child-first in `delete()`, `incr()` (expired branch),
   `sweep()` and `flush()`, which the new constraint makes mandatory.
+- Dev tooling: `ruff` is pinned to `==0.17.2` in the `dev` extra instead of a
+  `>=0.1.0` range, and the sources are formatted with that version, so the
+  `ruff format --check` step of CI passes again — it had been red since
+  2026-10-26, because a range let CI install whichever ruff was released last.
+  Formatting only: no runtime behavior changed.
 
 ## [0.1.0] - 2026-10-07
 
