@@ -39,6 +39,7 @@ def test_mset_failure_rolls_back_uncommitted_keys(tmp_path):
     finally:
         reopen.close()
 
+
 def test_set_ttl_overflow_rolls_back(tmp_path):
     """set() failing after the INSERT (huge ttl) must not keep the row."""
     s = Store(tmp_path / "store.db")

@@ -169,8 +169,7 @@ class SQLiteBackend:
         tables = [
             row[0]
             for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-                " AND name NOT LIKE 'sqlite_%'"
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
             )
         ]
         found: list[tuple[str, str, str, str]] = []
@@ -229,7 +228,6 @@ class SQLiteBackend:
         if not conn.execute("PRAGMA foreign_keys").fetchone()[0]:
             conn.rollback()
             conn.execute("PRAGMA foreign_keys=ON")
-
 
     def close(self) -> None:
         """Close the connection for this thread and reset its per-thread state.

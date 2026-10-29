@@ -195,9 +195,7 @@ def test_registry_records_clamped_version(tmp_path):
     db = tmp_path / "c.db"
     engine = _ClampedEngine(db)
     conn = engine._get_conn()
-    registry = conn.execute(
-        "SELECT version FROM _purr_schema WHERE engine='clamped'"
-    ).fetchone()[0]
+    registry = conn.execute("SELECT version FROM _purr_schema WHERE engine='clamped'").fetchone()[0]
     user_version = conn.execute("PRAGMA user_version").fetchone()[0]
     assert registry == 1
     assert registry == user_version
@@ -207,11 +205,11 @@ def test_registry_records_clamped_version(tmp_path):
     # Reopening neither rewrites nor downgrades the row.
     again = _ClampedEngine(db)
     assert again.run_migrations() == 0
-    row = again._get_conn().execute(
-        "SELECT version FROM _purr_schema WHERE engine='clamped'"
-    ).fetchone()[0]
+    row = (
+        again._get_conn()
+        .execute("SELECT version FROM _purr_schema WHERE engine='clamped'")
+        .fetchone()[0]
+    )
     assert row == 1
     assert again._get_conn().execute("PRAGMA user_version").fetchone()[0] == 1
     again.close()
-
-

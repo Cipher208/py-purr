@@ -78,9 +78,11 @@ def test_migrations_do_not_write_when_already_current(tmp_path):
 
     again = _QueryOnlyStore(db)  # must not raise: nothing left to write
     assert again.get("k") == "v"
-    row = again._get_conn().execute(
-        "SELECT version FROM _purr_schema WHERE engine='store'"
-    ).fetchone()
+    row = (
+        again._get_conn()
+        .execute("SELECT version FROM _purr_schema WHERE engine='store'")
+        .fetchone()
+    )
     assert row is not None and row[0] == Store.SCHEMA_VERSION
     again.close()
 

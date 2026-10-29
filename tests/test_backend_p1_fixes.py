@@ -62,14 +62,18 @@ def test_legacy_user_version_db_upgrade(tmp_path):
     events, _ = stream.read()
     assert [e.id for e in events] == ["e1"]  # data preserved
     # v2 index present (upgrade applied)
-    idx = stream._get_conn().execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_events_topic_ts'"
-    ).fetchone()
+    idx = (
+        stream._get_conn()
+        .execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_events_topic_ts'")
+        .fetchone()
+    )
     assert idx is not None
     # engine registered in the per-engine registry
-    reg = stream._get_conn().execute(
-        "SELECT version FROM _purr_schema WHERE engine='event_stream'"
-    ).fetchone()
+    reg = (
+        stream._get_conn()
+        .execute("SELECT version FROM _purr_schema WHERE engine='event_stream'")
+        .fetchone()
+    )
     assert reg is not None and reg[0] == 2
     stream.close()
 
@@ -95,14 +99,13 @@ def test_registered_engine_applies_new_migration_version(tmp_path):
     }
     m2 = Evolving(db)
     tables = {
-        r[0]
-        for r in m2._get_conn().execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )
+        r[0] for r in m2._get_conn().execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     assert "b" in tables
-    row = m2._get_conn().execute(
-        "SELECT version FROM _purr_schema WHERE engine='evolving'"
-    ).fetchone()
+    row = (
+        m2._get_conn()
+        .execute("SELECT version FROM _purr_schema WHERE engine='evolving'")
+        .fetchone()
+    )
     assert row[0] == 2
     m2.close()

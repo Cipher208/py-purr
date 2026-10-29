@@ -36,14 +36,16 @@ class TestCycle1SetSingleStatement:
         store = Store(tmp_path / "s.db")
         try:
             assert store.set("k", "first") is True
-            created_at = store._get_conn().execute(
-                "SELECT created_at FROM kv WHERE key = 'k'"
-            ).fetchone()[0]
+            created_at = (
+                store._get_conn().execute("SELECT created_at FROM kv WHERE key = 'k'").fetchone()[0]
+            )
 
             assert store.set("k", "second") is False
-            after = store._get_conn().execute(
-                "SELECT created_at, value FROM kv WHERE key = 'k'"
-            ).fetchone()
+            after = (
+                store._get_conn()
+                .execute("SELECT created_at, value FROM kv WHERE key = 'k'")
+                .fetchone()
+            )
             assert after["created_at"] == created_at, "overwrite must keep created_at"
             assert after["value"] == '"second"'
         finally:

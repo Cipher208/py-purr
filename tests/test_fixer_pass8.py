@@ -46,9 +46,9 @@ class TestCycle1BatchMget:
                     == 0
                 ), f"{dead} must be deleted from kv"
                 assert (
-                    conn.execute(
-                        "SELECT COUNT(*) FROM kv_meta WHERE key = ?", (dead,)
-                    ).fetchone()[0]
+                    conn.execute("SELECT COUNT(*) FROM kv_meta WHERE key = ?", (dead,)).fetchone()[
+                        0
+                    ]
                     == 0
                 ), f"{dead} must be deleted from kv_meta"
             assert store.get("live:1") == {"n": 1}, "live keys must survive"
@@ -102,9 +102,7 @@ class TestCycle1BatchMget:
 class TestCycle2ExpiresIndex:
     """sweep() scanned kv_meta: expires_at had no index."""
 
-    SWEEP_SQL = (
-        "SELECT key FROM kv_meta WHERE expires_at IS NOT NULL AND expires_at <= ?"
-    )
+    SWEEP_SQL = "SELECT key FROM kv_meta WHERE expires_at IS NOT NULL AND expires_at <= ?"
 
     def test_sweep_uses_expires_index(self, tmp_path):
         store = Store(tmp_path / "s.db")
@@ -143,9 +141,12 @@ class TestCycle2ExpiresIndex:
             assert Store.SCHEMA_VERSION == 2
             assert store.get("keep") == "me", "migration must not recreate tables"
             conn = store._get_conn()
-            assert conn.execute(
-                "SELECT version FROM _purr_schema WHERE engine = 'store'"
-            ).fetchone()[0] == 2
+            assert (
+                conn.execute("SELECT version FROM _purr_schema WHERE engine = 'store'").fetchone()[
+                    0
+                ]
+                == 2
+            )
             assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
             assert "idx_kv_meta_expires" in [
                 row[1] for row in conn.execute("PRAGMA index_list(kv_meta)")
@@ -290,9 +291,12 @@ class TestCycle5RetryClamp:
 
     def test_jitter_disabled_is_plain_backoff(self):
         handler = RetryHandler(RetryConfig(base_delay=2.0, max_delay=5.0, jitter=False))
-        assert [
-            handler._calculate_delay(attempt) for attempt in range(1, 5)
-        ] == [2.0, 4.0, 5.0, 5.0]
+        assert [handler._calculate_delay(attempt) for attempt in range(1, 5)] == [
+            2.0,
+            4.0,
+            5.0,
+            5.0,
+        ]
 
     def test_no_dead_pending_state(self):
         assert not hasattr(RetryHandler(), "_pending")

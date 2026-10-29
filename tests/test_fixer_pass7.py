@@ -32,8 +32,7 @@ def test_failed_migration_leaves_no_partial_ddl(tmp_path):
     conn = sqlite3.connect(str(db))
     try:
         tables = {
-            row[0]
-            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert "orphan" not in tables
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
