@@ -22,11 +22,14 @@ if TYPE_CHECKING:
 
 
 class JournalFlushError(RuntimeError):
-    """The data committed, but some journal events could not be written.
+    """Retired: this version can never raise it.
 
-    Raised after the commit, never instead of it: the caller is told that the
-    transaction is durable and only the journal is incomplete, so a failed
-    flush cannot be mistaken for a rollback.
+    It used to mean "the data committed, but some journal events could not be
+    written" — a state that no longer exists, because the event is inserted in
+    the data's own transaction: a failing event rolls the data back, so there
+    is no commit to report as durable. The name is kept only because
+    `purr/__init__.py` still exports it; remove that export and this class
+    together (Breaking for anyone catching it).
     """
 
 
@@ -38,6 +41,22 @@ class Store(SQLiteBackend):
     """
 
     def __init__(self, db_path: str | Path = "purr.db", journal: EventStream | None = None) -> None:
+        """Open the store, optionally journaling every mutation.
+
+        The journal must live in the same file as the data. A journal on
+        another file is rejected here, at start-up, instead of being accepted
+        and silently drifting: two files cannot share one transaction, so the
+        event could be lost after the data was already committed.
+        """
+        if journal is not None and journal.db_path.resolve() != Path(db_path).resolve():
+            raise ValueError(
+                "the journal must live in the same file as the data: "
+                f"journal={journal.db_path} data={db_path}. "
+                "The two-file mode was removed because it is not atomic — an "
+                "event could be lost after the data was committed, with nothing "
+                "left behind to report the gap. Pass EventStream(db_path) built "
+                "on the store's own file, or no journal at all."
+            )
         self._journal = journal
         super().__init__(db_path)
 
@@ -50,48 +69,19 @@ class Store(SQLiteBackend):
     def _in_transaction(self, value: bool) -> None:
         self._local.in_txn = value
 
-    @property
-    def _journal_buffer(self) -> list[dict[str, Any]]:
-        """Per-thread journal buffer (matches per-thread connections/txn flag)."""
-        if not hasattr(self._local, "journal_buffer"):
-            self._local.journal_buffer = []
-        return self._local.journal_buffer
-
     def _journal_emit(self, payload: dict[str, Any]) -> None:
-        """Append a mutation event to the journal stream (buffered in txn)."""
-        if self._journal is None:
-            return
-        if self._in_transaction:
-            self._journal_buffer.append(payload)
-            return
-        self._journal.append(Event(type=EventType.STORE, topic="store", payload=payload))
+        """Insert the mutation event in the caller's transaction (no commit).
 
-    def _journal_flush(self) -> None:
-        """Write buffered mutation events after transaction commit.
-
-        Every event is attempted even if an earlier one fails — one rejected
-        event must not silently drop the rest. Partial loss is reported with
-        JournalFlushError: the data is committed either way, so this can never
-        be presented as a rollback.
+        The event shares the data's transaction, so both are committed or
+        rolled back together and no buffer is needed. A failing insert
+        therefore rolls the data back — the journal is no longer a secondary
+        artifact that may lag behind the commit.
         """
         if self._journal is None:
             return
-        buffered = list(self._journal_buffer)
-        self._journal_buffer.clear()
-        failed: list[dict[str, Any]] = []
-        last_error: Exception | None = None
-        for payload in buffered:
-            try:
-                self._journal.append(Event(type=EventType.STORE, topic="store", payload=payload))
-            except Exception as exc:
-                failed.append(payload)
-                last_error = exc
-        if failed:
-            raise JournalFlushError(
-                f"transaction committed, but {len(failed)} journal events failed to flush; "
-                "data is durable, only the journal is incomplete "
-                f"(lost keys: {[p.get('key') for p in failed]})"
-            ) from last_error
+        self._journal.insert_in(
+            self._get_conn(), Event(type=EventType.STORE, topic="store", payload=payload)
+        )
 
     def _commit(self) -> None:
         """Commit unless inside an explicit transaction() block."""
@@ -102,8 +92,8 @@ class Store(SQLiteBackend):
         """Undo a partly applied mutation, unless transaction() owns it.
 
         Inside transaction() the partial rows belong to the caller's atomic
-        block: the context manager rolls back (and drops buffered journal
-        events) itself, so rolling back here would hide writes the caller may
+        block: the context manager rolls back (and takes the journal events
+        with it) itself, so rolling back here would hide writes the caller may
         still intend to commit after catching the error.
         """
         if self._in_transaction:
@@ -116,9 +106,10 @@ class Store(SQLiteBackend):
         """Atomic multi-op block. Commits on clean exit, rolls back on error.
 
         No nesting. Inner per-op commits are deferred until the block ends.
-        Journal events are flushed after the commit, outside the rollback
-        path: a flush failure raises JournalFlushError (the data is already
-        durable) instead of looking like a rollback.
+        Journal events are written inside this transaction, not flushed after
+        it, so they are committed or rolled back exactly like the data: a
+        failure while writing one rolls the whole block back instead of
+        looking like a commit with a gap in the journal.
         """
         if self._in_transaction:
             raise RuntimeError("nested transaction() is not supported")
@@ -134,14 +125,16 @@ class Store(SQLiteBackend):
             conn.commit()
         except Exception:
             conn.rollback()
-            self._journal_buffer.clear()
             raise
         finally:
             self._in_transaction = False
-        self._journal_flush()
 
     def _init_db(self) -> None:
         self.run_migrations()
+        if self._journal is not None:
+            # The events table has to exist in this file: the event insert runs
+            # on this connection, inside this connection's transaction.
+            self._journal.run_migrations()
 
     SCHEMA_VERSION = 2
     ENGINE_NAME = "store"
@@ -220,12 +213,12 @@ class Store(SQLiteBackend):
             else:
                 conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
 
+            self._journal_emit({"op": "set", "key": key, "value": value})
             self._commit()
         except Exception:
             self._rollback_failed_write()
             raise
 
-        self._journal_emit({"op": "set", "key": key, "value": value})
         return created
 
     def get(self, key: str) -> Any | None:
@@ -249,19 +242,21 @@ class Store(SQLiteBackend):
 
         kv_meta goes first: its FK to kv is enforced now, so deleting the
         parent while the child row still exists is a constraint violation.
+        The journal event is written inside the same transaction, so rowcount
+        is read before the commit — that is the only point where the decision
+        "did this delete anything?" still belongs to an open transaction.
         """
         conn = self._get_conn()
         try:
             conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
             cur = conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+            if cur.rowcount > 0:
+                self._journal_emit({"op": "delete", "key": key})
             self._commit()
         except Exception:
             self._rollback_failed_write()
             raise
-        deleted = cur.rowcount > 0
-        if deleted:
-            self._journal_emit({"op": "delete", "key": key})
-        return deleted
+        return cur.rowcount > 0
 
     def exists(self, key: str) -> bool:
         """Check if key exists (and is not expired)."""
@@ -303,12 +298,16 @@ class Store(SQLiteBackend):
             return False
         expires_at = datetime.now(UTC).timestamp() + ttl
         expires_str = datetime.fromtimestamp(expires_at, tz=UTC).isoformat()
-        conn.execute(
-            "INSERT OR REPLACE INTO kv_meta (key, expires_at) VALUES (?, ?)",
-            (key, expires_str),
-        )
-        self._commit()
-        self._journal_emit({"op": "expire", "key": key})
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO kv_meta (key, expires_at) VALUES (?, ?)",
+                (key, expires_str),
+            )
+            self._journal_emit({"op": "expire", "key": key})
+            self._commit()
+        except Exception:
+            self._rollback_failed_write()
+            raise
         return True
 
     def incr(self, key: str, amount: int = 1) -> int:
@@ -357,17 +356,18 @@ class Store(SQLiteBackend):
                     (key, json.dumps(amount), now, now),
                 )
             # kv_meta untouched for live keys: TTL preserved (P1-4).
+            # The event is written before the commit, inside this write
+            # transaction: a failing insert rolls the increment back rather
+            # than leaving a counter the journal never saw. Inside
+            # transaction() there is no commit here at all — the event simply
+            # stays in the caller's transaction.
+            self._journal_emit({"op": "set", "key": key, "value": new_val})
         except Exception:
             if own_txn:
                 conn.rollback()
             raise
         if own_txn:
             conn.commit()
-        # Emitted after the commit, like set/mset: a journal subscriber must
-        # never see the event before the data (and on a shared file the emit
-        # would otherwise block on this connection's own RESERVED lock).
-        # Inside transaction() the event is buffered until the block commits.
-        self._journal_emit({"op": "set", "key": key, "value": new_val})
         return new_val
 
     def decr(self, key: str, amount: int = 1) -> int:
@@ -377,14 +377,13 @@ class Store(SQLiteBackend):
     def mset(self, mapping: dict[str, Any]) -> None:
         """Set multiple keys atomically.
 
-        Journal events are emitted after the commit (same ordering as
-        set/delete), so journal consumers never observe uncommitted data.
-        A failure while serializing or writing any key rolls back the keys
-        written so far.
+        Journal events are written in the same transaction as the keys (same
+        ordering as set/delete), so a failing event rolls every key of the
+        batch back. A failure while serializing or writing any key rolls back
+        the keys written so far.
         """
         conn = self._get_conn()
         now = datetime.now(UTC).isoformat()
-        journal_payloads: list[dict[str, Any]] = []
         try:
             for key, value in mapping.items():
                 value_json = json.dumps(value)
@@ -396,13 +395,11 @@ class Store(SQLiteBackend):
                     """,
                     (key, value_json, value_type, key, now, now),
                 )
-                journal_payloads.append({"op": "set", "key": key, "value": value})
+                self._journal_emit({"op": "set", "key": key, "value": value})
             self._commit()
         except Exception:
             self._rollback_failed_write()
             raise
-        for payload in journal_payloads:
-            self._journal_emit(payload)
 
     def mget(self, keys: list[str]) -> list[Any | None]:
         """Get multiple values in two batch queries.

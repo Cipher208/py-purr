@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
+- **The journal is co-located with the data (ADR-001, variant C).** `Store`
+  and `StateMachine` now reject a journal that lives in another file:
+  `Store("purr.db", journal=EventStream("events.db"))` raises `ValueError` at
+  start-up. Two files cannot share one transaction, so an event could be lost
+  after the data was committed with nothing left to report the gap. Pass
+  `EventStream(<the same path>)` or no journal at all. Deployments that split
+  the files must merge them and **reset their cursors** — the new journal
+  starts empty, and a consumer resuming from an old cursor position reads a
+  log that no longer holds those events.
+- A failing event insert now **rolls the data back**. "The data is durable,
+  the journal is not" is no longer reachable, so the failure is an ordinary
+  `sqlite3` error from the write, not a commit with a gap behind it.
+- `JournalFlushError` is never raised. The class is kept only because
+  `purr/__init__.py` still exports it; both should be removed together.
 - `EventStream.append()` is now truly append-only: appending an event whose
   id already exists raises `ValueError` instead of silently overwriting the
   original event (P1-5). Code that relied on overwrite-by-id must switch to
@@ -40,6 +54,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumer from the beginning.
 
 ### Changed
+- `Store.set/delete/expire/incr/mset` and `StateMachine.send/set_state` write
+  their journal event **inside the data's transaction** instead of after the
+  commit: no second commit, no per-thread journal buffer, no flush step. The
+  event and the row it describes are committed or rolled back together, so the
+  crash window between them is gone by construction (measured: a batch of 500
+  keys killed mid-flight leaves `разрыв 0`).
+- `EventStream.insert_in(conn, event)` — insert an event on a caller-owned
+  connection and transaction (no commit). Used by the engines that share the
+  file; `append()` keeps its own-commit, duplicate-id contract.
+- `EventStream.db_path` — the file the stream is bound to, so an engine can
+  check that its journal is co-located before writing anything.
 - `incr()`/`decr()` are atomic (own `BEGIN IMMEDIATE` when outside
   `transaction()`); expired keys are not resurrected — incrementing an
   expired or missing key starts from 0 (Redis semantics); TTL of a live key

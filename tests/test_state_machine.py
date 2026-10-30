@@ -1,5 +1,7 @@
 """Tests for PURR State Machine."""
 
+import sqlite3
+
 import pytest
 
 from purr import EventStream, StateMachine
@@ -111,8 +113,32 @@ class TestStateMachinePersistence:
 
 class TestStateMachineJournal:
     def test_transition_appended_to_journal(self, tmp_path):
-        es = EventStream(tmp_path / "j.db")
-        sm = StateMachine("m", db_path=tmp_path / "s.db", journal=es)
+        """The transition event is written in the state's own transaction.
+
+        The spy opens a second connection: at emit time it must still see no
+        row, because the state has not been committed yet. Emitting after the
+        commit is what let a transition be lost while its state survived.
+        """
+        db = tmp_path / "s.db"
+        es = EventStream(db)
+        sm = StateMachine("m", db_path=db, journal=es)
+        seen: list[bool] = []
+        original_emit = sm._journal_emit
+
+        def spy_emit(payload):
+            conn = sqlite3.connect(str(db))
+            try:
+                row = conn.execute(
+                    "SELECT current_state FROM state_machines WHERE name = 'm'"
+                ).fetchone()
+            finally:
+                conn.close()
+            # "already visible" means this very transition, not the row left
+            # behind by the previous set_state()
+            seen.append(row is not None and row[0] == payload["to"])
+            original_emit(payload)
+
+        sm._journal_emit = spy_emit
         sm.add_transition("idle", "flow", "start")
         sm.set_state("idle")
         assert sm.send("start") is True
@@ -121,7 +147,15 @@ class TestStateMachineJournal:
             ("set", None, "idle"),
             ("transition", "idle", "flow"),
         ]
+        assert seen == [False, False]
         sm.close()
+        es.close()
+
+    def test_foreign_journal_path_rejected(self, tmp_path):
+        """Same journal contract as Store: a journal on another file is refused."""
+        es = EventStream(tmp_path / "j.db")
+        with pytest.raises(ValueError, match="same file as the data"):
+            StateMachine("m", db_path=tmp_path / "s.db", journal=es)
         es.close()
 
     def test_no_journal_no_stream_writes(self, tmp_path):

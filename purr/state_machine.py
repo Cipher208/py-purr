@@ -62,6 +62,22 @@ class StateMachine(SQLiteBackend):
         db_path: str | Path = "state.db",
         journal: EventStream | None = None,
     ) -> None:
+        """Open the machine, optionally journaling every state change.
+
+        Same journal contract as Store: the stream must live in the data file,
+        because the transition event is written in the state's own transaction.
+        A journal on another file is refused here rather than accepted with a
+        gap that no one can see afterwards.
+        """
+        if journal is not None and journal.db_path.resolve() != Path(db_path).resolve():
+            raise ValueError(
+                "the journal must live in the same file as the data: "
+                f"journal={journal.db_path} data={db_path}. "
+                "The two-file mode was removed because it is not atomic — a "
+                "transition event could be lost after the state was committed. "
+                "Pass EventStream(db_path) built on the machine's own file, or "
+                "no journal at all."
+            )
         self.name = name
         self._journal = journal
         super().__init__(db_path)
@@ -73,13 +89,19 @@ class StateMachine(SQLiteBackend):
         self._load_state()
 
     def _journal_emit(self, payload: dict[str, Any]) -> None:
-        """Append a transition event to the journal stream."""
+        """Insert the transition event in the caller's transaction (no commit)."""
         if self._journal is None:
             return
-        self._journal.append(Event(type=EventType.STATE, topic="fsm", payload=payload))
+        self._journal.insert_in(
+            self._get_conn(), Event(type=EventType.STATE, topic="fsm", payload=payload)
+        )
 
     def _init_db(self) -> None:
         self.run_migrations()
+        if self._journal is not None:
+            # The event joins this connection's transaction, so the events
+            # table has to exist in this file.
+            self._journal.run_migrations()
 
     SCHEMA_VERSION = 1
     ENGINE_NAME = "state_machine"
@@ -160,8 +182,7 @@ class StateMachine(SQLiteBackend):
                     data={**old_state.data, **data},
                 )
                 self._current = new_state
-                self._save_state()
-                self._journal_emit(
+                self._commit_state(
                     {
                         "op": "transition",
                         "event": event,
@@ -179,8 +200,7 @@ class StateMachine(SQLiteBackend):
     def set_state(self, name: str, data: dict[str, Any] | None = None) -> None:
         """Force set state (bypasses transitions)."""
         self._current = State(name=name, data=data or {})
-        self._save_state()
-        self._journal_emit({"op": "set", "from": None, "to": name})
+        self._commit_state({"op": "set", "from": None, "to": name})
 
     def snapshot(self) -> None:
         """Save current state as a snapshot."""
@@ -225,6 +245,7 @@ class StateMachine(SQLiteBackend):
             entered_at=datetime.fromisoformat(row["created_at"]),
         )
         self._save_state()
+        conn.commit()
         return True
 
     def get_snapshots(self, limit: int = 10) -> list[dict[str, Any]]:
@@ -280,6 +301,7 @@ class StateMachine(SQLiteBackend):
             )
 
     def _save_state(self) -> None:
+        """Write the current state row. No commit: the caller owns the transaction."""
         if not self._current:
             return
 
@@ -296,4 +318,18 @@ class StateMachine(SQLiteBackend):
                 datetime.now(UTC).isoformat(),
             ),
         )
-        conn.commit()
+
+    def _commit_state(self, payload: dict[str, Any]) -> None:
+        """Save the state and its journal event in one transaction.
+
+        The event is inserted before the commit, so a failing event rolls the
+        state back instead of leaving a transition the journal never saw.
+        """
+        conn = self._get_conn()
+        try:
+            self._save_state()
+            self._journal_emit(payload)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise

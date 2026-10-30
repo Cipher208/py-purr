@@ -66,6 +66,16 @@ class EventStream(SQLiteBackend):
     def _init_db(self) -> None:
         self.run_migrations()
 
+    @property
+    def db_path(self) -> Path:
+        """File this stream is bound to.
+
+        Engines that journal their mutations (Store, StateMachine) compare it
+        with their own path: the event must join the data's transaction, which
+        is only possible when both live in one file.
+        """
+        return self._db_path
+
     SCHEMA_VERSION = 2
     ENGINE_NAME = "event_stream"
     MIGRATIONS = {
@@ -155,6 +165,18 @@ class EventStream(SQLiteBackend):
             conn.rollback()
             raise
         conn.commit()
+
+    def insert_in(self, conn: sqlite3.Connection, event: Event) -> None:
+        """Insert an event into the caller's connection and transaction.
+
+        Used by engines that share this file (Store, StateMachine): the event
+        joins the caller's transaction instead of opening its own, so data and
+        event commit or roll back together. No commit here, and no translation
+        of a duplicate id into ValueError — the caller's transaction is what
+        has to unwind, and only the caller knows how.
+        """
+        self._validate_timestamp(event)
+        self._insert(conn, event)
 
     def _insert(self, conn: sqlite3.Connection, event: Event) -> None:
         """Shared INSERT used by append/append_many (no commit here).

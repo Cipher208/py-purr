@@ -201,7 +201,7 @@ class TestStoreJournal:
     def test_mutations_appended_to_journal(self, tmp_path):
         from purr import EventStream
 
-        es = EventStream(tmp_path / "j.db")
+        es = EventStream(tmp_path / "s.db")
         s = Store(tmp_path / "s.db", journal=es)
         s.set("a", 1)
         s.expire("a", 60)
@@ -218,7 +218,7 @@ class TestStoreJournal:
     def test_journal_replays_to_final_state(self, tmp_path):
         from purr import EventStream
 
-        es = EventStream(tmp_path / "j.db")
+        es = EventStream(tmp_path / "s.db")
         s = Store(tmp_path / "s.db", journal=es)
         s.set("a", 1)
         s.set("b", 2)
@@ -245,15 +245,23 @@ class TestStoreJournal:
         s.close()
         es.close()
 
-    def test_journal_flushes_on_txn_commit(self, tmp_path):
+    def test_journal_events_join_the_txn(self, tmp_path):
+        """The event is written inside the data's transaction.
+
+        Two sides of one fact: a separate connection sees nothing until the
+        commit (no dirty read), while the store's own connection already holds
+        the event. That is what "same transaction" means, and it is why the
+        event can no longer be lost after the data is committed.
+        """
         from purr import EventStream
 
-        es = EventStream(tmp_path / "j.db")
+        es = EventStream(tmp_path / "s.db")
         s = Store(tmp_path / "s.db", journal=es)
         with s.transaction():
             s.set("a", 1)
             events_during, _ = es.read(topic="store")
             assert events_during == []
+            assert s._get_conn().execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
         events, _ = es.read(topic="store")
         assert [e.payload["key"] for e in events] == ["a"]
         s.close()
@@ -262,10 +270,12 @@ class TestStoreJournal:
     def test_journal_drops_on_txn_rollback(self, tmp_path):
         from purr import EventStream
 
-        es = EventStream(tmp_path / "j.db")
+        es = EventStream(tmp_path / "s.db")
         s = Store(tmp_path / "s.db", journal=es)
         with pytest.raises(RuntimeError, match="boom"), s.transaction():
             s.set("a", 1)
+            # the event is already in this transaction, not queued behind it
+            assert s._get_conn().execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
             raise RuntimeError("boom")
         events, _ = es.read(topic="store")
         assert events == []
@@ -274,12 +284,17 @@ class TestStoreJournal:
 
 
 class TestMsetJournalOrder:
-    def test_mset_journals_after_commit(self, tmp_path):
-        """At journal-emit time, mset data must already be committed and
-        visible to a second (independent) connection."""
+    def test_mset_journals_inside_the_transaction(self, tmp_path):
+        """mset writes its events before the commit, in the same transaction.
+
+        A second (independent) connection therefore sees no event and no row
+        while mset runs — both appear together at the commit. Under the old
+        ordering the spy saw the data already committed and the event still
+        pending, which is exactly the gap the card closes.
+        """
         from purr import EventStream, Store
 
-        es = EventStream(tmp_path / "j.db")
+        es = EventStream(tmp_path / "s.db")
         s = Store(tmp_path / "s.db", journal=es)
         visible: list[bool] = []
         original_emit = s._journal_emit
@@ -299,28 +314,22 @@ class TestMsetJournalOrder:
 
         s._journal_emit = spy_emit
         s.mset({"a": 1, "b": 2})
-        assert visible == [True, True]
+        assert visible == [False, False]
         s.close()
         es.close()
 
 
-class TestJournalBufferPerThread:
-    def test_journal_buffer_per_thread(self, tmp_path):
-        """The journal buffer must be per-thread: buffered events in one
-        thread's transaction() must never mix with another thread's."""
-        import threading
+class TestJournalCoLocation:
+    def test_foreign_journal_path_rejected(self, tmp_path):
+        """A journal on another file is refused at start-up, not tolerated.
 
-        from purr import Store
+        Two files cannot share one transaction, so the event could always be
+        lost after the data was committed. That mode is gone: the journal must
+        live in the data file.
+        """
+        from purr import EventStream, Store
 
-        s = Store(tmp_path / "s.db")
-        bufs: dict[str, list] = {}
-
-        def grab():
-            bufs[threading.current_thread().name] = s._journal_buffer
-
-        t = threading.Thread(target=grab, name="worker")
-        t.start()
-        t.join()
-        bufs["MainThread"] = s._journal_buffer
-        assert bufs["MainThread"] is not bufs["worker"]
-        s.close()
+        es = EventStream(tmp_path / "j.db")
+        with pytest.raises(ValueError, match="same file as the data"):
+            Store(tmp_path / "s.db", journal=es)
+        es.close()

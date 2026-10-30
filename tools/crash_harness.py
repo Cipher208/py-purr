@@ -9,7 +9,7 @@
     run-journal-txn             [runs]  — пачка в транзакции, убийство в окне сразу после коммита
     run-journal-txn-nonatomic   [runs]  — то же, но журнал моделируется НЕатомарным (порядок до правки);
                                           обязан краснеть всегда, в том числе после правки продукта
-    run-journal                 [runs]  — одиночные записи, журнал в отдельном файле
+    run-journal                 [runs]  — одиночные записи, журнал в файле данных
 
 Правило доказательства: ключ считается подтверждённым только после того, как set() вернул True
 И после этого строка ушла в stdout с flush. Значит «подтверждено» никогда не опережает коммит.
@@ -252,23 +252,24 @@ def cmd_run_txn(runs: int) -> int:
 
 
 def cmd_write_journal(kv_path: str, ev_path: str, slow: bool = False) -> None:
-    """Сценарий 3: запись в KV с журналом в отдельном файле.
+    """Сценарий 3: одиночные записи с журналом.
 
-    slow=True расширяет окно между коммитом KV и записью события: append тормозит,
-    чтобы убийство гарантированно попало в этот зазор. Так проверяется не удача,
-    а само окно.
+    Под вариантом C журнал живёт в файле данных, поэтому ev_path не
+    используется: двухфайловый режим отвергнут продуктом на старте. Окна
+    «коммит KV → запись события» больше нет, так что slow растягивает саму
+    вставку события внутри транзакции, а не зазор после неё.
     """
     from purr import EventStream, Store
 
-    journal = EventStream(ev_path)
+    journal = EventStream(kv_path)
     if slow:
-        original_append = journal.append
+        original_insert = journal.insert_in
 
-        def slow_append(event):
+        def slow_insert(conn, event):
             time.sleep(0.05)
-            return original_append(event)
+            return original_insert(conn, event)
 
-        journal.append = slow_append
+        journal.insert_in = slow_insert
 
     store = Store(kv_path, journal=journal)
     i = 0
@@ -281,6 +282,7 @@ def cmd_write_journal(kv_path: str, ev_path: str, slow: bool = False) -> None:
 
 
 def cmd_verify_journal(kv_path: str, ev_path: str, keys_path: str) -> None:
+    """Журнал читается из файла данных: под C он живёт там же, что и KV."""
     from purr import Store
 
     with open(keys_path, encoding="utf-8") as f:
@@ -290,15 +292,10 @@ def cmd_verify_journal(kv_path: str, ev_path: str, keys_path: str) -> None:
     try:
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         kv_keys = {row[0] for row in conn.execute("SELECT key FROM kv").fetchall()}
-    finally:
-        conn.close()
-
-    conn = sqlite3.connect(ev_path)
-    try:
-        ev_integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         rows = conn.execute("SELECT payload FROM events WHERE topic='store'").fetchall()
     finally:
         conn.close()
+    ev_integrity = integrity
 
     journal_keys = set()
     for (payload,) in rows:
@@ -410,6 +407,9 @@ def _open_store_for_batch(kv_path: str, ev_path: str):
     Возвращает (store, journal, co_located). Проба, а не вера в текущий код:
     до правки Store принимает чужой путь журнала (два файла), после варианта C
     отвергает его явной ошибкой, и журнал живёт в файле данных.
+
+    В co-located случае журнал открывается на пути ДАННЫХ, а не на ev_path:
+    иначе store остался бы вообще без журнала, и стенд мерил бы пустоту.
     """
     from purr import EventStream, Store
 
@@ -420,7 +420,8 @@ def _open_store_for_batch(kv_path: str, ev_path: str):
     except ValueError:
         # C.1-b: чужой путь журнала отвергнут на старте, журнал — в файле данных.
         journal.close()
-        return Store(kv_path), None, True
+        co_located_journal = EventStream(kv_path)
+        return Store(kv_path, journal=co_located_journal), co_located_journal, True
 
 
 def cmd_write_journal_txn(kv_path: str, ev_path: str, marker_path: str) -> None:
@@ -586,11 +587,14 @@ def cmd_verify_journal_txn(kv_path: str, ev_path: str) -> None:
 
     kv_events, kv_integrity = _tx_journal_keys(kv_path)
     ev_events, ev_integrity = _tx_journal_keys(ev_path)
-    journal_keys = kv_events | ev_events
-    journal_integrity = (
-        "ok" if kv_integrity == "ok" and ev_integrity == "ok"
-        else "kv:%s / events:%s" % (kv_integrity, ev_integrity)
-    )
+    # Под вариантом C журнал живёт в файле данных. Если события есть там, то
+    # журнал — этот файл; отдельный events.db тогда остаётся только следом
+    # пробы конфигурации, и засчитывать его значило бы мерить файл, которого
+    # продукт больше не пишет. До правки журнал — второй файл.
+    if kv_events:
+        journal_keys, journal_integrity = kv_events, kv_integrity
+    else:
+        journal_keys, journal_integrity = ev_events, ev_integrity
 
     print(json.dumps({
         "tx_in_kv": len(tx_kv),

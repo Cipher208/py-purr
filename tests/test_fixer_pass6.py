@@ -43,21 +43,23 @@ def test_retention_valid_values_pass(tmp_path):
 def test_close_resets_thread_state(tmp_path):
     """A close() in the middle of a transaction must not poison the thread.
 
-    The transaction flag and the journal buffer live in threading.local and
-    outlive the connection, so after close() every later transaction() raised
-    "nested transaction() is not supported" forever.
+    The transaction flag lives in threading.local and outlives the connection,
+    so after close() every later transaction() raised "nested transaction() is
+    not supported" forever. The journal buffer is gone with the co-located
+    journal: events are written in the data's transaction instead of being
+    parked until a flush.
     """
-    store = Store(tmp_path / "s.db", journal=EventStream(tmp_path / "ev.db"))
+    db = tmp_path / "s.db"
+    store = Store(db, journal=EventStream(db))
     ctx = store.transaction()
     ctx.__enter__()  # open a transaction and deliberately not leave it
     assert store._in_transaction is True
     store.set("buffered", "v")
-    assert store._journal_buffer  # journal event parked for the open txn
+    assert not hasattr(store, "_journal_buffer")
 
     store.close()
 
     assert store._in_transaction is False
-    assert store._journal_buffer == []
     with store.transaction():
         store.set("after", "v2")
     assert store.get("after") == "v2"
