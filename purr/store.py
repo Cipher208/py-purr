@@ -427,7 +427,12 @@ class Store(SQLiteBackend):
         return [None if key in expired else values.get(key) for key in keys]
 
     def sweep(self) -> int:
-        """Delete expired keys. Returns count of removed keys."""
+        """Delete expired keys. Returns count of removed keys.
+
+        Every removal is journalled: a replay of the journal has to reach the
+        same state as the database, and a key that disappears from `kv` while
+        the journal still shows it alive is a silent divergence.
+        """
         conn = self._get_conn()
         now = datetime.now(UTC).isoformat()
         cur = conn.execute(
@@ -435,20 +440,35 @@ class Store(SQLiteBackend):
             (now,),
         )
         dead = [row["key"] for row in cur.fetchall()]
-        for key in dead:
-            conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
-            conn.execute("DELETE FROM kv WHERE key = ?", (key,))
-        self._commit()
+        try:
+            for key in dead:
+                conn.execute("DELETE FROM kv_meta WHERE key = ?", (key,))
+                conn.execute("DELETE FROM kv WHERE key = ?", (key,))
+                self._journal_emit({"op": "delete", "key": key})
+            self._commit()
+        except Exception:
+            self._rollback_failed_write()
+            raise
         return len(dead)
 
     def flush(self) -> int:
-        """Delete all keys. Returns count of deleted keys."""
+        """Delete all keys. Returns count of deleted keys.
+
+        Like `sweep`, every removal is journalled, so the journal can rebuild
+        an empty store from the same events the database recorded.
+        """
         conn = self._get_conn()
-        count = conn.execute("SELECT COUNT(*) FROM kv").fetchone()[0]
-        conn.execute("DELETE FROM kv_meta")
-        conn.execute("DELETE FROM kv")
-        self._commit()
-        return count
+        keys = [row["key"] for row in conn.execute("SELECT key FROM kv").fetchall()]
+        try:
+            conn.execute("DELETE FROM kv_meta")
+            conn.execute("DELETE FROM kv")
+            for key in keys:
+                self._journal_emit({"op": "delete", "key": key})
+            self._commit()
+        except Exception:
+            self._rollback_failed_write()
+            raise
+        return len(keys)
 
     def size(self) -> int:
         """Return number of keys."""
