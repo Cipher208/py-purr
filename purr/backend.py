@@ -268,6 +268,7 @@ class SQLiteBackend:
         if str(self._db_path) == ":memory:":
             return {"db_bytes": 0, "wal_bytes": 0}
         db = self._db_path.stat().st_size if self._db_path.exists() else 0
-        wal = self._db_path.with_suffix(".db-wal")
+        # SQLite appends to the whole file name: `store.db` -> `store.db-wal`.
+        wal = self._db_path.with_name(self._db_path.name + "-wal")
         wal_bytes = wal.stat().st_size if wal.exists() else 0
         return {"db_bytes": db, "wal_bytes": wal_bytes}
