@@ -35,7 +35,9 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -364,35 +366,87 @@ def probe_p1_8() -> Result:
     return HOLDS, "Store и EventStream на одном файле: events создана, append работает, count=1"
 
 
-def probe_p1_9() -> Result:
-    """get() на истёкшем ключе не мутирует хранилище.
+def _measure_read(
+    store: Store, journal: EventStream, key: str, read: Callable[[], Any]
+) -> tuple[Any, int, int]:
+    """Один вход чтения по своему истёкшему ключу: ответ, события delete, строки.
 
-    Проверяется и журнал (аудит мерил именно событие delete), и сами данные:
-    после чтения истёкшего ключа строка в kv остаётся, новых событий нет.
+    Замер, а не вердикт: вердикт выносит проба, чтобы в отчёте было видно, какой
+    именно вход сломан. Журнал читается до и после вызова, а событие delete
+    приписывается конкретному ключу — иначе три входа слились бы в один счётчик
+    и причина падения стала бы безымянной.
+    """
+    before, _ = journal.read()
+    answer = read()
+    after, _ = journal.read()
+    deletes = [
+        event
+        for event in after[len(before) :]
+        if event.payload.get("op") == "delete" and event.payload.get("key") == key
+    ]
+    conn = store._get_conn()
+    rows = conn.execute("SELECT COUNT(*) FROM kv WHERE key = ?", (key,)).fetchone()[0]
+    return answer, len(deletes), rows
+
+
+def probe_p1_9() -> Result:
+    """Ни один путь чтения не мутирует: get(), exists() и mget().
+
+    Дефект один и тот же в трёх местах: get() зовёт self.delete(key) на
+    истёкшем ключе (store.py:220), exists() делегирует в get() (store.py:251),
+    mget() зовёт self.delete(key) для каждого истёкшего ключа пачки
+    (store.py:416-417). Проба даёт каждому входу свой истёкший ключ и для
+    каждого утверждает: строка в kv на месте, события delete по этому ключу нет.
+
+    exists() измеряется отдельно, хотя сегодня идёт через get(): если get()
+    починят, а exists() заведут своим путём, расхождение обязано покраснеть
+    здесь, а не остаться незамеченным. mget() проверяется на пачке из живого и
+    истёкшего ключа — одиночный ключ не отличил бы пачку от get().
+
+    Ответ тоже утверждается («ключа нет»), и это не придирка: если из mget()
+    убрать только self.delete(key) и не исключить истёкший ключ из выборки
+    значений, mget() начнёт возвращать протухшее значение. Без этого
+    утверждения проба позеленела бы на такой правке, то есть приняла бы регресс.
     """
     tmp = Path(tempfile.mkdtemp(prefix="purr-p19-"))
     db = tmp / "kv.db"  # журнал обязан жить в файле данных, иначе Store бросает ValueError
     journal = EventStream(str(db))
     store = Store(str(db), journal=journal)
+    live = "alive"
     try:
-        store.set("k", "v", ttl=0.1)
+        store.set(live, "v")
+        read_paths = (
+            ("get()", "k-get", None, lambda: store.get("k-get")),
+            ("exists()", "k-exists", False, lambda: store.exists("k-exists")),
+            ("mget()", "k-mget", ["v", None], lambda: store.mget([live, "k-mget"])),
+        )
+        for _, key, _, _ in read_paths:
+            store.set(key, "v", ttl=0.1)
         time.sleep(0.25)
-        before, _ = journal.read()
-        value = store.get("k")
-        after, _ = journal.read()
-        new = [e for e in after[len(before) :] if e.payload.get("op") == "delete"]
-        rows = store._get_conn().execute("SELECT COUNT(*) FROM kv WHERE key = ?", ("k",)).fetchone()[0]
+        measured = [
+            (name, expected, _measure_read(store, journal, key, read))
+            for name, key, expected, read in read_paths
+        ]
     finally:
         store.close()
         journal.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    if new or rows == 0:
-        return BROKEN, (
-            f"get() на истёкшем ключе вернул {value!r}, но породил {len(new)} событие(й) "
-            f"delete в журнале и удалил строку из kv (осталось {rows})"
-        )
-    return HOLDS, f"get() вернул {value!r}, новых событий 0, строка в kv осталась"
+    problems: list[str] = []
+    for name, expected, (answer, deletes, rows) in measured:
+        if deletes or rows == 0:
+            problems.append(
+                f"{name} на истёкшем ключе пишет: событий delete {deletes}, "
+                f"строк в kv осталось {rows}"
+            )
+        elif answer != expected:
+            problems.append(f"{name} на истёкшем ключе вернул {answer!r}, ожидалось {expected!r}")
+    if problems:
+        return BROKEN, "; ".join(problems)
+    answers = ", ".join(f"{name}→{answer!r}" for name, _, (answer, _, _) in measured)
+    return HOLDS, (
+        f"ни один путь чтения не пишет: {answers}; событий delete 0, строки в kv на месте"
+    )
 
 
 def probe_p1_9b() -> Result:
@@ -499,7 +553,7 @@ PROBES = (
     ("P1-6 saga re-execute", probe_p1_6),
     ("P1-7 publish_sync", probe_p1_7),
     ("P1-8 два engine на файле", probe_p1_8),
-    ("P1-9 get() мутирует", probe_p1_9),
+    ("P1-9 чтение мутирует", probe_p1_9),
     ("P1-9b уборка жива", probe_p1_9b),
     ("P1-10 db_stats WAL", probe_p1_10),
 )
