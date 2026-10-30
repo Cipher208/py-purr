@@ -1,7 +1,8 @@
 """Судья задачи «обещания про потребителей журнала проверены».
 
 Три проверки, каждая — про утверждение, которое раньше было обещанием:
-  1. читатель, трогающий только op/key/value, не падает на новой форме события;
+  1. форма события измерена: у flush нет key и value, поэтому читатель с прямым
+     индексированием key на нём падает, а читатель через .get() проходит;
   2. корректный реплей (понимает set/delete/flush) сходится с живой базой;
   3. отказ поиска срока в mset() оставляет базу нетронутой — ни ключей, ни событий.
 
@@ -69,15 +70,31 @@ def main() -> int:
         store.set("c", 3)  # после flush: проверка не должна проходить на пустоте
         ops = read_all(journal)
 
-        # 1. читатель, который смотрит только на поля
+        # 1. форма события измерена честно, а не через .get() по всем полям
+        flush_events = [op for op in ops if op.get("op") == "flush"]
+        shape_ok = (
+            len(flush_events) == 1
+            and "key" not in flush_events[0]
+            and "value" not in flush_events[0]
+        )
+        print(f"{'PASS' if shape_ok else 'FAIL'}  форма flush: {flush_events} (ожидалось одно событие без key и value)")
+        bad += 0 if shape_ok else 1
+
+        indexed_failed = False
         try:
-            seen = [(op.get("op"), op.get("key"), op.get("value")) for op in ops]
-            ok = ("flush", None, None) in seen and ("set", "a", 1) in seen
-            print(f"{'PASS' if ok else 'FAIL'}  читатель полей: {seen}")
-        except Exception as exc:  # noqa: BLE001
-            ok = False
-            print(f"FAIL  читатель полей упал: {exc!r}")
-        bad += 0 if ok else 1
+            for op in ops:
+                _ = (op["op"], op["key"], op.get("value"))
+        except KeyError as exc:
+            indexed_failed = True
+            print(f"PASS  читатель с прямым индексированием key падает на flush: KeyError({exc}) — риск реален")
+        if not indexed_failed:
+            print("FAIL  читатель с индексированием key прошёл — значит key есть у всех событий, и документация врёт в другую сторону")
+        bad += 0 if indexed_failed else 1
+
+        tolerant = [(op.get("op"), op.get("key"), op.get("value")) for op in ops]
+        tolerant_ok = ("flush", None, None) in tolerant and ("set", "a", 1) in tolerant
+        print(f"{'PASS' if tolerant_ok else 'FAIL'}  читатель через .get() проходит: {tolerant}")
+        bad += 0 if tolerant_ok else 1
 
         # 2. корректный реплей понимает flush
         clone = Store(str(tmp / "replay.db"))
@@ -121,7 +138,7 @@ def main() -> int:
         journal.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print(f"ИТОГ: провалено {bad} из 3")
+    print(f"ИТОГ: провалено {bad} из 5")
     return 1 if bad else 0
 
 
