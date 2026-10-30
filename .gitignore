@@ -40,3 +40,6 @@ ENV/
 *.swo
 *~
 uv.lock
+
+# Editor/backup leftovers — never part of the project
+*.bak

@@ -55,6 +55,21 @@ path = "purr/__init__.py"
 # allowed to differ, and this is the line that makes it work.
 packages = ["purr"]
 
+[tool.hatch.build.targets.sdist]
+# Explicit include list, not an exclude list: whatever gets added to the
+# repository next (team cards, probes, the crash stand, internal reports) must
+# not reach the sdist by default. Measured before this section existed: the
+# sdist carried .dev-team/, tools/, .github/, AUDIT-REPORT.md and
+# HARNESS-RESULTS.md — 73 files, most of them not the library.
+include = [
+    "purr",
+    "tests",
+    "pyproject.toml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
