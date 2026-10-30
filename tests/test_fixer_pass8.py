@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from purr import Store
+from purr import EventStream, Store
 from purr.health import HealthChecker, HealthStatus
 from purr.retry import RetryConfig, RetryHandler
 from purr.state_machine import StateMachine
@@ -23,14 +23,22 @@ class TestCycle1BatchMget:
     """mget() issued 2 queries per key (`[self.get(key) for key in keys]`)."""
 
     def test_mget_matches_get_semantics(self, tmp_path):
-        """Lives, expired and missing keys must answer exactly like get()."""
-        store = Store(tmp_path / "s.db")
+        """Lives, expired and missing keys must answer exactly like get().
+
+        Reading is not writing: an expired key answers as missing, but its row
+        stays in kv and kv_meta and no delete event is journalled. Physical
+        removal belongs to sweep()/maintain().
+        """
+        db = tmp_path / "s.db"
+        journal = EventStream(db)
+        store = Store(db, journal=journal)
         try:
             store.set("live:1", {"n": 1})
             store.set("live:2", "two")
             store.set("dead:1", "gone", ttl=-1)
             store.set("dead:2", [1, 2], ttl=-1)
             keys = ["live:1", "missing", "dead:1", "live:2", "dead:2", "live:1"]
+            before, _ = journal.read()
 
             result = store.mget(keys)
 
@@ -39,21 +47,30 @@ class TestCycle1BatchMget:
             )
             assert result == [store.get(k) for k in keys]
 
+            after, _ = journal.read()
+            deletes = [
+                event.payload["key"]
+                for event in after[len(before) :]
+                if event.payload.get("op") == "delete"
+            ]
+            assert deletes == [], f"mget must not delete expired keys, journalled: {deletes}"
+
             conn = store._get_conn()
             for dead in ("dead:1", "dead:2"):
                 assert (
                     conn.execute("SELECT COUNT(*) FROM kv WHERE key = ?", (dead,)).fetchone()[0]
-                    == 0
-                ), f"{dead} must be deleted from kv"
+                    == 1
+                ), f"{dead} must stay in kv: reading is not sweeping"
                 assert (
                     conn.execute("SELECT COUNT(*) FROM kv_meta WHERE key = ?", (dead,)).fetchone()[
                         0
                     ]
-                    == 0
-                ), f"{dead} must be deleted from kv_meta"
+                    == 1
+                ), f"{dead} must stay in kv_meta: reading is not sweeping"
             assert store.get("live:1") == {"n": 1}, "live keys must survive"
         finally:
             store.close()
+            journal.close()
 
     def test_mget_empty_list_runs_no_queries(self, tmp_path):
         store = Store(tmp_path / "s.db")

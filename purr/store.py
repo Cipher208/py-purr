@@ -210,14 +210,18 @@ class Store(SQLiteBackend):
         return created
 
     def get(self, key: str) -> Any | None:
-        """Get value by key. Returns None if not found or expired."""
+        """Get value by key. Returns None if not found or expired.
+
+        An expired key is answered as missing but not removed: reading does not
+        write, so the row and the journal stay untouched. Physical cleanup
+        belongs to sweep()/maintain().
+        """
         conn = self._get_conn()
 
         meta = conn.execute("SELECT expires_at FROM kv_meta WHERE key = ?", (key,)).fetchone()
         if meta and meta["expires_at"]:
             expires_at = datetime.fromisoformat(meta["expires_at"])
             if datetime.now(UTC) > expires_at:
-                self.delete(key)
                 return None
 
         row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
@@ -396,8 +400,8 @@ class Store(SQLiteBackend):
         statements per key (a kv_meta expiry probe plus the value read), so
         1000 keys cost 2000 round-trips. Now one `key IN (...)` query for the
         expired set and one for the values; the answer matches get() exactly,
-        expired keys are deleted like get() does (journal event included), and
-        the result keeps the order and duplicates of `keys`.
+        expired keys answer None and stay in the table like get() leaves them,
+        and the result keeps the order and duplicates of `keys`.
         """
         if not keys:
             return []
@@ -405,22 +409,22 @@ class Store(SQLiteBackend):
         placeholders = ",".join("?" * len(keys))
         now = datetime.now(UTC).isoformat()
 
-        expired = [
+        expired = {
             row["key"]
             for row in conn.execute(
                 f"SELECT key FROM kv_meta WHERE key IN ({placeholders})"
                 " AND expires_at IS NOT NULL AND expires_at <= ?",
                 (*keys, now),
             ).fetchall()
-        ]
-        for key in dict.fromkeys(expired):
-            self.delete(key)
+        }
 
         rows = conn.execute(
             f"SELECT key, value FROM kv WHERE key IN ({placeholders})", keys
         ).fetchall()
         values = {row["key"]: json.loads(row["value"]) for row in rows}
-        return [values.get(key) for key in keys]
+        # Masked here, not deleted: the row stays for sweep(), and without the
+        # mask the expired value would come back as live.
+        return [None if key in expired else values.get(key) for key in keys]
 
     def sweep(self) -> int:
         """Delete expired keys. Returns count of removed keys."""
