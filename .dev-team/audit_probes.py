@@ -13,12 +13,17 @@ VOID не считается ни HOLDS, ни BROKEN: молчаливый пр�
 
 Код возврата: 0 — все HOLDS, 1 — есть BROKEN, 2 — VOID без BROKEN.
 
+`--only <ID>` прогоняет ровно одну пробу (P1-9, регистр не важен). Неизвестный
+идентификатор — сообщение об ошибке и код 2, а не молчаливый ноль: опечатка в
+идентификаторе не должна выглядеть как состоявшийся прогон.
+
 Ожидаемый результат на HEAD 60d755e: P1-1..P1-8 — HOLDS (фиксы заходов
 1-3 на месте), P1-9 и P1-10 — BROKEN (находки живы).
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import shutil
@@ -428,12 +433,46 @@ PROBES = (
 )
 
 
-def main() -> int:
+def _parse_args(argv: list[str]) -> str | None:
+    """Разбирает аргументы командной строки: единственный флаг `--only <ID>`.
+
+    Возвращает идентификатор пробы или None, если фильтра нет (прогон всех).
+    Неизвестный флаг и `--only` без значения — ошибка argparse и код 2:
+    опечатка не должна давать молчаливый прогон всех проб. allow_abbrev=False
+    по той же причине: иначе опечатка `--onl P1-9` принимается как `--only`.
+    """
+    parser = argparse.ArgumentParser(
+        prog="audit_probes.py",
+        description="Пробы на находки P1 из AUDIT-REPORT.md.",
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--only",
+        metavar="ID",
+        help="прогнать ровно одну пробу по идентификатору, например P1-9 (регистр не важен)",
+    )
+    return parser.parse_args(argv).only
+
+
+def main(argv: list[str] | None = None) -> int:
+    only = _parse_args(sys.argv[1:] if argv is None else argv)
+    probes = list(PROBES)
+    if only is not None:
+        wanted = only.strip().lower()
+        probes = [entry for entry in probes if entry[0].split()[0].lower() == wanted]
+        if not probes:
+            known = ", ".join(entry[0].split()[0] for entry in PROBES)
+            print(
+                f"ОШИБКА: неизвестный идентификатор пробы {only!r}. Известные: {known}",
+                file=sys.stderr,
+            )
+            return 2
+
     results: list[tuple[str, str, str]] = []
     # Which tree is measured: an editable install of purr points at the working
     # copy, so a run inside a control clone must prove it imported the clone.
     print(f"purr: {Path(sys.modules['purr'].__file__).resolve().parent}")
-    for name, probe in PROBES:
+    for name, probe in probes:
         try:
             status, detail = probe()
         except Exception as exc:  # noqa: BLE001 - упавшая проба не должна выдавать себя за вердикт
