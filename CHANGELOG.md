@@ -240,6 +240,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matter how much WAL was on disk — 61 832 bytes in the audit probe, and a
   monitor reading `db_stats()` saw an empty WAL. Paths with a `.db` suffix and
   `:memory:` report exactly what they did before.
+- The crash stand's `run-journal` mode (`tools/crash_harness.py`,
+  `cmd_verify_journal`) refuses on a journal gap: the gap was computed and
+  printed, but the exit condition looked only at lost confirmed keys, phantom
+  events and integrity, so a run whose journal lagged behind KV exited `0` and
+  passed the stand. A gap now exits `1` like the other divergences, and `0`
+  means KV and the journal agree on every key. Measured: `run-journal 1` on a
+  healthy database reports `разрыв 0` → `exit=0`; the same check on a copy with
+  one journal event deleted reports `gap=1` → `exit=1`.
 
 ### Added
 - `EventStream(..., max_events=..., max_age_seconds=...)` retention limits
@@ -342,7 +350,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written in a second transaction — and has to stay red: measured on this
   machine, the atomic run reports `разрыв 0` and exits `0`, the control reports
   `разрыв 496` and exits `1`. A stand that always passes cannot hide behind it.
-  `run-journal` still prints its gap but exits `0` — that verdict is not in yet.
+  `run-journal` prints its gap and now exits `1` on one as well — see Fixed.
 
 ## [0.1.0] - 2026-10-07
 

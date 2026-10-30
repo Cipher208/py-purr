@@ -288,13 +288,22 @@ and checks what survived.
 
 ```bash
 uv run python tools/crash_harness.py run 1               # plain writes
+uv run python tools/crash_harness.py run-txn 1           # one transaction, 500 writes
+uv run python tools/crash_harness.py run-journal 1       # single writes + journal
 uv run python tools/crash_harness.py run-journal-txn 1   # transaction + journal
 uv run python tools/crash_harness.py run-journal-txn-nonatomic 1  # control
 ```
 
-Exit code `0` means no divergence was found, `1` means the stand found one
-(`run`, `run-txn`, `run-journal-txn`). `run-journal` prints its gap but still
-exits `0`.
+Exit code `0` means the stand found no divergence, `1` means it found one, in
+every mode — so any of them can fail a script. `run-journal` counts three
+things as divergence: a key in KV with no journal event (gap), a journal event
+with no key (phantom), and a confirmed key that did not survive. Its `0` means
+KV and journal agree on every key that is there; it does not by itself prove
+the writer got far enough to be measured — an empty database also reports
+`gap 0` and exits `0`. `run-journal-txn` closes that hole for itself by
+refusing a run whose 500-key batch never committed (`ПРОГОН НЕ СОСТОЯЛСЯ`);
+`run-journal` has no such guard, so read its report line, not only its exit
+code.
 
 `run-journal-txn-nonatomic` is the control for `run-journal-txn`: it models the
 pre-fix order (data committed, event written in a second transaction) and must
