@@ -3,10 +3,10 @@
 Проверяет то, ради чего журнал существует: по нему можно восстановить состояние.
   1. контроль: убирать нечего -> sweep() возвращает 0 и не пишет событий;
   2. sweep() удаляет истёкший ключ -> в журнале событие delete на этот ключ;
-  3. flush() удаляет всё -> в журнале событие delete на каждый удалённый ключ.
+  3. flush() удаляет всё -> в журнале ОДНО событие flush (не по одному на ключ).
 
-Сейчас второй и третий пункты падают: sweep/flush делают сырые DELETE без
-_journal_emit, поэтому журнал считает удалённые ключи живыми.
+Контракт flush изменён отдельной карточкой: одно событие вместо N — иначе
+журнал растёт по строкам, а не по операциям.
 """
 
 import json
@@ -54,8 +54,8 @@ def main() -> int:
         flushed = store.flush()
         after = ops(journal)
         new = [op for op in after[len(before):]]
-        ok = flushed == 1 and ("delete", "live") in new
-        print(f"{'PASS' if ok else 'FAIL'}  flush: удалено {flushed}, новых событий {new} (ожидалось delete live)")
+        ok = flushed == 1 and new == [("flush", None)]
+        print(f"{'PASS' if ok else 'FAIL'}  flush: удалено {flushed}, новых событий {new} (ожидалось одно flush)")
         failed += 0 if ok else 1
 
         store.set("nothing", 1, ttl=60)
