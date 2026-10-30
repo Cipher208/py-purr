@@ -58,6 +58,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently off), floats (`2.9` died later with
   `sqlite3.IntegrityError: datatype mismatch`), numeric strings (`"2"` was
   coerced silently) and booleans.
+- **Reading an expired key no longer deletes it.** `get()`, `exists()` and
+  `mget()` answer an expired key as missing — `None`, `False`, and `None` in
+  the requested position — and leave the row where it is: no `DELETE`, no
+  `delete` event in the journal, no write on the read path. Physical cleanup
+  belongs to `sweep()` and `maintain()`. What changes for you: an expired key
+  stays in `keys()` and still counts in `size()` until one of those runs, and
+  the journal no longer carries a `delete` event for every read that happened
+  to touch a dead key. Code that sized its store by `size()`, watched the
+  journal for `delete`, or leaned on `get()` to clean up after itself must
+  call `sweep()` on its own schedule.
 
 ### Added
 - `EventStream.append_many()` — atomic batch append (duplicate id rolls back
@@ -124,8 +134,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `OperationalError: database is locked` until `close()`. `append_many()`
   already did this; `append()` now matches.
 - README contracts aligned with actual behavior: saga is in-memory and its
-  rollback covers previously completed steps only; TTL expiry is lazy;
-  suite size updated.
+  rollback covers previously completed steps only; TTL expiry is lazy — a
+  read reports an expired key as missing and leaves it in place (see
+  Breaking); suite size updated.
 - `EventStream._prune()` now commits whenever the connection holds a
   transaction, not only when rows were actually deleted (pass-3 regression):
   the `DELETE`s open an implicit transaction even with `rowcount == 0`, so

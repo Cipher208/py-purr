@@ -20,7 +20,7 @@ Modern applications and autonomous AI agents need reliable state management, eve
 - 🪶 **Zero Infrastructure:** Pure Python. No Docker containers, no external services, no background daemons, zero network overhead.
 - ⚡ **SQLite WAL Mode:** Concurrency-safe, high-throughput atomic read/writes that survive crashes and power loss.
 - 🔄 **3-in-1 Architecture:**
-  1. **Key-Value Store:** Fast storage with TTL (lazy expiry: checked on get/exists, or run sweep()/maintain() manually), atomic multi-set, and atomic numeric operations.
+  1. **Key-Value Store:** Fast storage with TTL (lazy expiry: `get()`/`exists()` report an expired key as missing but do not delete it — `sweep()`/`maintain()` do the physical cleanup), atomic multi-set, and atomic numeric operations.
   2. **State Machine & Sagas:** FSM engine with persistent snapshots, guards, and rollback of previously completed saga steps on failure (compensating transactions).
   3. **Event Streams & Pub/Sub:** Redis Streams-like append-only event store with consumer cursors and middleware pipelines (rate limiting, deduplication, filtering).
 
@@ -67,10 +67,34 @@ store.set("session_token", "xyz-123", ttl=3600)
 store.mset({"counter": 0, "status": "active"})
 store.incr("counter", 1)  # returns 1
 
-# TTL notes: expiry is lazy — an expired key disappears on get()/exists(),
-# but stays visible in keys()/size() until sweep() or maintain() runs.
-# incr() is atomic (safe across threads) and follows Redis semantics:
-# incrementing an expired or missing key starts from 0.
+# TTL notes: expiry is lazy and read-only — get()/exists()/mget() report an
+# expired key as missing (None / False) and leave it in place, so it stays in
+# keys() and in size() until sweep() or maintain() runs the physical cleanup.
+# A read emits no journal event. incr() is atomic (safe across threads) and
+# follows Redis semantics: incrementing an expired or missing key starts from 0.
+```
+
+An expired key is missing to every reader and still on disk until cleanup
+runs — reading does not write:
+
+```python
+import time
+
+from purr import Store
+
+store = Store(":memory:")
+store.set("short_lived", "gone soon", ttl=0.05)
+time.sleep(0.2)
+
+store.get("short_lived")     # None
+store.exists("short_lived")  # False
+store.mget(["short_lived"])  # [None]
+store.keys()                 # ['short_lived'] — the read did not delete it
+store.size()                 # 1 — it still counts until cleanup runs
+
+store.sweep()                # 1 — cleanup is explicit, not a side effect of reading
+store.keys()                 # []
+store.size()                 # 0
 ```
 
 ---
