@@ -242,3 +242,150 @@ cb315a8bfebcd8e10f930e409ae018cf9a44d9d0
 4. **`CHANGELOG.md`** — требование карточки, судьёй не проверяется и мной не оценивалось.
 5. **Флаки тестов** — гонял судью 3 раза (все одинаковы), но 201 тест по отдельности на флаки не проверял.
 6. **Слепое пятно `norm() -> None`** из 3.3 — подозрение, воспроизведения не делал.
+
+---
+
+## 7. Перенос стенда в репозиторий и перестановка тега accept-base
+
+Заход 2. Стенд перенесён байт-в-байт, тег `accept-base` переставлен на коммит переноса.
+Логика стенда не тронута: ни строки не правил.
+
+### 7.1 Перенос без правки содержимого
+
+Источник: `C:/Users/Sart-/WorkBuddy AI/2026-10-24-07-59-40/harness/crash_harness.py`
+Копия в репозитории: `tools/crash_harness.py` (каталога `tools/` до этого не было — создан)
+
+| Что | Источник | Копия | Блоб в коммите |
+|---|---|---|---|
+| sha256 | `745eea163ce607be66b866fb11023231862b6f7e0e895cb4211db582bf436887` | `745eea163ce607be66b866fb11023231862b6f7e0e895cb4211db582bf436887` | `745eea163ce607be66b866fb11023231862b6f7e0e895cb4211db582bf436887` |
+| размер, байт | 20459 | 20459 | 20459 |
+
+Доказательства равенства:
+
+```
+$ cp "<источник>" tools/crash_harness.py ; echo "cp exit=$?"
+cp exit=0
+$ cmp "<источник>" tools/crash_harness.py ; echo "cmp exit=$?"
+cmp exit=0 (0 = identical)
+$ sha256sum "<источник>" tools/crash_harness.py
+745eea163ce607be66b866fb11023231862b6f7e0e895cb4211db582bf436887 *C:/Users/Sart-/WorkBuddy AI/2026-10-24-07-59-40/harness/crash_harness.py
+745eea163ce607be66b866fb11023231862b6f7e0e895cb4211db582bf436887 *tools/crash_harness.py
+$ wc -c "<источник>" tools/crash_harness.py
+20459 <источник>
+20459 tools/crash_harness.py
+```
+
+Копия сделана `cp`, не текстовым инструментом (предупреждение о CRLF в задании учтено).
+CR-байт в источнике: 0, в копии: 0 — файл чисто LF. `core.autocrlf=true` и правило
+`.gitattributes` `*.py text eol=lf` на этот файл не влияют: содержимое блоба в git
+совпадает с файлом побайтно, проверено чтением объекта, а не рабочего файла:
+
+```
+$ git cat-file blob HEAD:tools/crash_harness.py | sha256sum
+745eea163ce607be66b866fb11023231862b6f7e0e895cb4211db582bf436887 *-
+$ git cat-file blob HEAD:tools/crash_harness.py | wc -c
+20459
+```
+
+### 7.2 Коммит переноса
+
+Один коммит, один файл. Стадия проверена до коммита: `git diff --cached --name-only`
+показал ровно `tools/crash_harness.py`.
+
+```
+$ git add tools/crash_harness.py && git commit -m "test(harness): move the crash harness into the repository"
+[main afb5f31] test(harness): move the crash harness into the repository
+ 1 file changed, 544 insertions(+)
+ create mode 100644 tools/crash_harness.py
+
+$ git show --stat --oneline HEAD
+afb5f31 test(harness): move the crash harness into the repository
+ tools/crash_harness.py | 544 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 544 insertions(+)
+```
+
+**Коммит переноса: `afb5f312f72d5ce54d764334d53bcb6fd30704a4`** (`afb5f31`).
+
+### 7.3 Перестановка тега
+
+`git tag -f` не использовал — старый тег снят, новый поставлен заново:
+
+```
+$ git tag -d accept-base
+Deleted tag 'accept-base' (was 0590229)
+$ git tag accept-base HEAD
+$ git rev-parse HEAD
+afb5f312f72d5ce54d764334d53bcb6fd30704a4
+$ git rev-parse accept-base
+afb5f312f72d5ce54d764334d53bcb6fd30704a4
+$ git log --oneline -1 accept-base
+afb5f31 test(harness): move the crash harness into the repository
+$ git ls-tree -r accept-base --name-only | grep tools/
+tools/crash_harness.py
+```
+
+**Тег `accept-base` = `afb5f312f72d5ce54d764334d53bcb6fd30704a4`**, до перестановки был
+`0590229908437a3d84b224543fcaa463d3e62717` (коммит `0590229`, документация).
+
+### 7.4 Прогон в рабочем дереве
+
+```
+$ cd C:/Users/Sart-/Projects/repos/PURR && PYTHONPATH=. .venv/Scripts/python.exe tools/crash_harness.py run-journal-txn 1; echo "exit=$?"
+run 1: маркер сброса=да | tx в KV 500/500 | событий tx 3 | разрыв 497 | integrity ok / журнал ok
+exit=0
+```
+
+### 7.5 Прогон в свежем клоне на accept-base
+
+Клон вне репозитория: `mktemp -d` → `tmp.nrvJ1N7lfm/base`, `git clone --no-hardlinks`,
+затем `git checkout accept-base`. Файл в клоне есть, дерево клона чистое:
+
+```
+$ git -C "$TMP/base" rev-parse accept-base
+afb5f312f72d5ce54d764334d53bcb6fd30704a4
+$ sha256sum "$TMP/base/tools/crash_harness.py"
+745eea163ce607be66b866fb11023231862b6f7e0e895cb4211db582bf436887 *.../base/tools/crash_harness.py
+$ wc -c "$TMP/base/tools/crash_harness.py"
+20459 .../base/tools/crash_harness.py
+$ git -C "$TMP/base" status --porcelain
+(пусто)
+```
+
+Прогон в клоне (интерпретатор — венв основного репозитория по абсолютному пути:
+`.venv/` в `.gitignore:33` и в клон не попадает; `SELF = os.path.abspath(__file__)`,
+поэтому дочерние процессы берут файл клона, а не рабочего дерева):
+
+```
+$ cd "$TMP/base" && PYTHONPATH=. "<repo>/.venv/Scripts/python.exe" tools/crash_harness.py run-journal-txn 1; echo "exit=$?"
+run 1: маркер сброса=да | tx в KV 500/500 | событий tx 3 | разрыв 497 | integrity ok / журнал ok
+exit=0
+```
+
+Вывод в клоне совпадает с рабочим деревом до последнего символа. Стенд в клоне есть и
+работает — это и требовалось доказать переносом.
+
+### 7.6 Устойчивость вывода (не флаки)
+
+Стенд использует `random`, поэтому одного прогона мало. Шесть прогонов, все одинаковые:
+3 в рабочем дереве + 3 в клоне → каждый `разрыв 497`, `exit=0`.
+
+```
+--- работа дерево, прогон 1/2/3 ---
+run 1: маркер сброса=да | tx в KV 500/500 | событий tx 3 | разрыв 497 | integrity ok / журнал ok
+exit=0        (×3, вывод идентичен)
+--- клон accept-base, прогон 1/2/3 ---
+run 1: маркер сброса=да | tx в KV 500/500 | событий tx 3 | разрыв 497 | integrity ok / журнал ok
+exit=0        (×3, вывод идентичен)
+```
+
+### 7.7 Что этот шаг НЕ доказывает
+
+Перенос доказывает только то, что стенд доступен из репозитория и воспроизводит дефект.
+Он **не** доказывает, что стенд умеет отказывать: сейчас на `HEAD` он печатает
+`разрыв 497` и возвращает `0`, то есть дефект жив. Красное по критерию карточки
+(`exit=1` при разрыве) появится только после правки Chisel; негативный контроль
+(«стенд, который всегда возвращает 0, приёмку не проходит») ставит Warder на приёмке.
+
+Состояние рабочего дерева после шага (до правки этой заметки): ` M .dev-team/card.md`
+(правка Keel), `?? .dev-team/archive/judge_ci.py.bak`, `?? HARNESS-RESULTS.md` — чужое,
+не трогал.
