@@ -158,6 +158,63 @@ if last_id:
     stream.set_cursor("my-consumer", last_id)
 ```
 
+#### Journaling mutations
+
+`Store` and `StateMachine` accept `journal=` and write every mutation to an
+event stream. The stream must live in the **same file** as the data: the event
+joins the data's transaction, so it is committed or rolled back together with
+the row it describes, never after it. A journal on another file is refused at
+start-up.
+
+```python
+from purr import EventStream, Store
+
+# The journal must live in the data file: one file, one transaction.
+stream = EventStream("app_state.db")
+store = Store("app_state.db", journal=stream)
+
+with store.transaction():
+    store.set("user:1001", {"name": "Alice"})
+    store.set("user:1002", {"name": "Bob"})
+
+for event in stream.read()[0]:
+    print(event.payload)
+# {'op': 'set', 'key': 'user:1001', 'value': {'name': 'Alice'}}
+# {'op': 'set', 'key': 'user:1002', 'value': {'name': 'Bob'}}
+
+# A journal on another file is refused at start-up:
+try:
+    Store("app_state.db", journal=EventStream("events.db"))
+except ValueError as exc:
+    print("ValueError:", exc)
+# ValueError: the journal must live in the same file as the data: ...
+```
+
+Migrating a deployment whose journal lived in its own `events.db`:
+
+1. The old file stays readable — `EventStream("events.db")` opens it as before
+   — but new events are written to the data file. Nothing is deleted.
+2. Open the store once with `EventStream(<the data file>)`: that is what
+   creates the `events` and `cursors` tables inside the data file.
+3. To keep the history in one place, merge it, cursors included — they point
+   at events that move with them, so consumers resume where they stopped:
+
+```python
+import sqlite3
+
+dst = sqlite3.connect("app_state.db")
+dst.execute("ATTACH DATABASE 'events.db' AS old")
+dst.execute("INSERT OR IGNORE INTO events SELECT * FROM old.events")
+dst.execute("INSERT OR IGNORE INTO cursors SELECT * FROM old.cursors")
+dst.commit()
+dst.close()
+```
+
+Skip step 3 and the new journal starts empty: a consumer whose saved cursor id
+came from the old log fails with `ValueError: cursor references missing event
+id`, and `stream.reset_cursor(name)` restarts it from the beginning of the new
+log.
+
 ---
 
 ### 5. Pub/Sub with Middleware Pipeline
@@ -198,7 +255,7 @@ uv sync --extra dev
 uv run pytest -v
 ```
 
-The suite is 201 tests and runs in a few seconds. CI additionally enforces
+The suite is 202 tests and runs in a few seconds. CI additionally enforces
 `ruff check`, `ruff format --check`, and a coverage gate of 85% on Python
 3.11, 3.12 and 3.13.
 
@@ -208,11 +265,16 @@ and checks what survived.
 ```bash
 uv run python tools/crash_harness.py run 1               # plain writes
 uv run python tools/crash_harness.py run-journal-txn 1   # transaction + journal
+uv run python tools/crash_harness.py run-journal-txn-nonatomic 1  # control
 ```
 
 Exit code `0` means no divergence was found, `1` means the stand found one
 (`run`, `run-txn`, `run-journal-txn`). `run-journal` prints its gap but still
 exits `0`.
+
+`run-journal-txn-nonatomic` is the control for `run-journal-txn`: it models the
+pre-fix order (data committed, event written in a second transaction) and must
+stay red — a stand that passes both is measuring nothing.
 
 ---
 

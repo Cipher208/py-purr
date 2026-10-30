@@ -11,17 +11,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The journal is co-located with the data (ADR-001, variant C).** `Store`
   and `StateMachine` now reject a journal that lives in another file:
   `Store("purr.db", journal=EventStream("events.db"))` raises `ValueError` at
-  start-up. Two files cannot share one transaction, so an event could be lost
-  after the data was committed with nothing left to report the gap. Pass
-  `EventStream(<the same path>)` or no journal at all. Deployments that split
-  the files must merge them and **reset their cursors** — the new journal
-  starts empty, and a consumer resuming from an old cursor position reads a
-  log that no longer holds those events.
-- A failing event insert now **rolls the data back**. "The data is durable,
-  the journal is not" is no longer reachable, so the failure is an ordinary
-  `sqlite3` error from the write, not a commit with a gap behind it.
-- `JournalFlushError` is never raised. The class is kept only because
-  `purr/__init__.py` still exports it; both should be removed together.
+  start-up, and so does `StateMachine(..., journal=EventStream("events.db"))`.
+  Two files cannot share one transaction, so an event could be lost after the
+  data was committed with nothing left to report the gap. Pass
+  `EventStream(<the same path>)` or no journal at all.
+- A failing event insert now **rolls the data back**. The event is written
+  inside the data's transaction, so "the data is durable, the journal is not"
+  is no longer a reachable state: a journal write that raises — a full disk, a
+  locked file, a payload SQLite refuses — takes the mutation with it, and the
+  caller gets the ordinary `sqlite3` error from the write instead of a
+  successful commit with a gap behind it. Inside `transaction()` the whole
+  block is undone, not just the operation that failed. Catch `sqlite3.Error`
+  where the code used to expect a committed write.
+- `JournalFlushError` is **removed**, class and export together:
+  `purr.JournalFlushError` raises `AttributeError` and
+  `from purr.store import JournalFlushError` raises `ImportError`. It reported
+  the one state that can no longer happen — a commit that succeeded while its
+  events did not.
+- The journal **buffer and the post-commit flush step are gone**. Events used
+  to be queued per thread and written after the commit; now each one is written
+  where it happens. When a call returns, its event is either committed with the
+  row or the call failed: there is no longer a window in which the data is
+  durable and the event is still pending, and nothing to flush at the end of a
+  transaction.
+- **Upgrading a two-file deployment.** The old `events.db` remains a readable
+  standalone stream and nothing is deleted, but the journal in the data file
+  starts empty. Open the store once with `EventStream(<the data file>)` — that
+  creates the `events` and `cursors` tables there — then merge the old log
+  with `ATTACH DATABASE 'events.db' AS old`, `INSERT OR IGNORE INTO events
+  SELECT * FROM old.events` and the same for `cursors`. The cursor rows move
+  with the events, so consumers resume where they stopped. Skipping the merge
+  leaves a consumer whose saved cursor id came from the old file with
+  `ValueError("cursor references missing event id")`; `reset_cursor(name)`
+  restarts it from the beginning of the new log. README carries the runnable
+  recipe.
 - `EventStream.append()` is now truly append-only: appending an event whose
   id already exists raises `ValueError` instead of silently overwriting the
   original event (P1-5). Code that relied on overwrite-by-id must switch to
@@ -217,6 +240,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("transaction committed, but N journal events failed to flush", data is
   durable), so a journal outage is no longer indistinguishable from a
   rollback. Failed payloads are collected and the rest still flushed.
+  **Superseded before release:** the class is removed — the state it reported
+  (commit succeeded, events did not) no longer exists; see Breaking.
 - `MigrationGapError` (`purr.versioning`, exported as `purr.MigrationGapError`)
   — raised when a migration chain has a hole (pass-7 audit). A missing hop used
   to `break` out of the loop and hand the consumer a pre-migration payload with
@@ -234,12 +259,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   yet, and on a shared file (`Store(db, journal=EventStream(db))`) `incr()`
   waited out the 5 s busy timeout on its own `RESERVED` lock and failed with
   `database is locked` while `set()` worked. Inside `transaction()` the event
-  is still buffered until the block commits.
+  is still buffered until the block commits. **Superseded:** the event is now
+  written inside the data's transaction and no buffer exists; see Breaking.
 - `Store.transaction()` flushes the journal after the commit and outside the
   rollback path (pass-4 audit): a failing flush no longer drops the caller into
   a rollback branch that cannot undo anything. Every buffered event is
   attempted — one rejected event no longer drops the rest — and partial loss
-  raises `JournalFlushError`.
+  raises `JournalFlushError`. **Superseded:** there is no flush step and no
+  partial loss any more — a failed event insert rolls the block back; see
+  Breaking.
 - `EventStream.read()` cursor semantics (P2-1): reading with a cursor id
   that does not exist in the stream now raises
   `ValueError("cursor references missing event id: ...")` — previously it
@@ -251,10 +279,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `set()`/`delete()` ordering (P2-3): journal consumers never observe
   uncommitted (or rolled-back) mset data. Inside an explicit
   `transaction()` behavior is unchanged (buffered, flushed after commit).
+  **Superseded:** events are written inside the data's transaction; see
+  Breaking.
 - `Store`'s internal journal buffer is per-thread (P2-5), matching the
   per-thread connections and transaction flag: concurrent `transaction()`
   blocks in different threads no longer mix or drop each other's buffered
-  journal events.
+  journal events. **Superseded:** the buffer is gone; see Breaking.
 - `EventStream` stores event timestamps in UTC and rejects an event dated more
   than a day in the future (pass-7 audit). Retention compared timestamps as
   text: an event carrying a `-05:00` offset was deleted as "old" the moment it
@@ -288,7 +318,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tools/crash_harness.py` — it used to sit in a dated workspace folder and
   could vanish with it. Its `run`, `run-txn` and `run-journal-txn` modes now
   exit `1` when the scenario diverges and `0` when it does not, so the stand
-  can fail a script instead of only printing; the report text is unchanged.
+  can fail a script instead of only printing; apart from one added
+  `конфигурация:` line in the `run-journal-txn` report, the text is unchanged.
+  `run-journal-txn-nonatomic` models the pre-fix order — data committed, event
+  written in a second transaction — and has to stay red: measured on this
+  machine, the atomic run reports `разрыв 0` and exits `0`, the control reports
+  `разрыв 496` and exits `1`. A stand that always passes cannot hide behind it.
   `run-journal` still prints its gap but exits `0` — that verdict is not in yet.
 
 ## [0.1.0] - 2026-10-07
