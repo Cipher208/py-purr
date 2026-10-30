@@ -117,6 +117,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ValueError`: use `reset_cursor(name)` to clear a cursor on purpose.
 
 ### Fixed
+- `sweep()` and `flush()` now journal every removal. Both deleted rows with
+  raw SQL and wrote no event, so a journal replay kept the removed keys
+  alive: the audit log disagreed with the database and nothing reported it.
+  A replay of the journal now reaches the same key set as the store.
 - P1-1: failed `BEGIN IMMEDIATE` no longer poisons the transaction flag
   (records were silently lost afterwards).
 - P1-2: transaction flag is thread-local, matching the per-thread
