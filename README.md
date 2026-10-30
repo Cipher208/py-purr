@@ -244,10 +244,13 @@ log.
 ### Replaying the journal
 
 The journal records `set` (with `expires_at` when the key has a TTL),
-`delete`, `expire` and `flush`. A replay must handle **every** op: one that
-skips ops it does not recognise will drop `flush` and keep keys that were
-deleted, with nothing to report the divergence. `flush()` writes a single
-event, not one per key — the journal grows with operations, not with rows.
+`delete`, `expire` and `flush` from the store, and `transition` from
+`StateMachine`. A replay must handle **every** op: one that skips ops it
+does not recognise will drop `flush` and keep keys that were deleted, with
+nothing to report the divergence. The `flush` event carries neither `key`
+nor `value`, so a reader that indexes those fields directly has to handle
+it. `flush()` writes a single event, not one per key — the journal grows
+with operations, not with rows.
 
 ### 5. Pub/Sub with Middleware Pipeline
 
