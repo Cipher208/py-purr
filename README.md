@@ -241,6 +241,14 @@ log.
 
 ---
 
+### Replaying the journal
+
+The journal records `set` (with `expires_at` when the key has a TTL),
+`delete`, `expire` and `flush`. A replay must handle **every** op: one that
+skips ops it does not recognise will drop `flush` and keep keys that were
+deleted, with nothing to report the divergence. `flush()` writes a single
+event, not one per key — the journal grows with operations, not with rows.
+
 ### 5. Pub/Sub with Middleware Pipeline
 
 ```python

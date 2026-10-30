@@ -11,8 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The journal event shape changed.** `flush()` now emits one
   `{"op": "flush"}` event instead of a `delete` per key, and `set`/`incr`/
   `mset` events carry `expires_at` when the key has an expiry. A consumer
-  that replays the journal must handle the new op and the new field; one
-  that only reads `op`/`key`/`value` is unaffected.
+  that replays the journal must handle the new op and the new field. One
+  that only reads `op`/`key`/`value` is unaffected — measured, not assumed.
+  A replayer that silently skips ops it does not know loses `flush` and
+  keeps deleted keys alive; that is the failure mode to guard against.
 - **The journal is co-located with the data (ADR-001, variant C).** `Store`
   and `StateMachine` now reject a journal that lives in another file:
   `Store("purr.db", journal=EventStream("events.db"))` raises `ValueError` at
