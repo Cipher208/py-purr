@@ -198,9 +198,21 @@ uv sync --extra dev
 uv run pytest -v
 ```
 
-The suite is 117 tests and runs in a few seconds. CI additionally enforces
+The suite is 201 tests and runs in a few seconds. CI additionally enforces
 `ruff check`, `ruff format --check`, and a coverage gate of 85% on Python
 3.11, 3.12 and 3.13.
+
+Crash-durability stand: `tools/crash_harness.py` kills a writer mid-operation
+and checks what survived.
+
+```bash
+uv run python tools/crash_harness.py run 1               # plain writes
+uv run python tools/crash_harness.py run-journal-txn 1   # transaction + journal
+```
+
+Exit code `0` means no divergence was found, `1` means the stand found one
+(`run`, `run-txn`, `run-journal-txn`). `run-journal` prints its gap but still
+exits `0`.
 
 ---
 

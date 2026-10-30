@@ -259,6 +259,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ruff format --check` step of CI passes again — it had been red since
   2026-10-26, because a range let CI install whichever ruff was released last.
   Formatting only: no runtime behavior changed.
+- Dev tooling: the crash-durability stand lives in the repository as
+  `tools/crash_harness.py` — it used to sit in a dated workspace folder and
+  could vanish with it. Its `run`, `run-txn` and `run-journal-txn` modes now
+  exit `1` when the scenario diverges and `0` when it does not, so the stand
+  can fail a script instead of only printing; the report text is unchanged.
+  `run-journal` still prints its gap but exits `0` — that verdict is not in yet.
 
 ## [0.1.0] - 2026-10-07
 
