@@ -21,18 +21,6 @@ if TYPE_CHECKING:
     from .event_stream import EventStream
 
 
-class JournalFlushError(RuntimeError):
-    """Retired: this version can never raise it.
-
-    It used to mean "the data committed, but some journal events could not be
-    written" — a state that no longer exists, because the event is inserted in
-    the data's own transaction: a failing event rolls the data back, so there
-    is no commit to report as durable. The name is kept only because
-    `purr/__init__.py` still exports it; remove that export and this class
-    together (Breaking for anyone catching it).
-    """
-
-
 class Store(SQLiteBackend):
     """Thread-safe key-value store backed by SQLite WAL.
 

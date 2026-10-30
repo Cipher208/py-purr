@@ -363,8 +363,9 @@ def probe_p1_9() -> Result:
     после чтения истёкшего ключа строка в kv остаётся, новых событий нет.
     """
     tmp = Path(tempfile.mkdtemp(prefix="purr-p19-"))
-    journal = EventStream(str(tmp / "events.db"))
-    store = Store(str(tmp / "kv.db"), journal=journal)
+    db = tmp / "kv.db"  # журнал обязан жить в файле данных, иначе Store бросает ValueError
+    journal = EventStream(str(db))
+    store = Store(str(db), journal=journal)
     try:
         store.set("k", "v", ttl=0.1)
         time.sleep(0.25)
