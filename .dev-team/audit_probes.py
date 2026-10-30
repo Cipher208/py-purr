@@ -1,4 +1,4 @@
-"""Пробы на 10 находок P1 из AUDIT-REPORT.md.
+"""Пробы на 10 находок P1 из AUDIT-REPORT.md плюс сторож P1-9b.
 
 Одна проба — одна находка — одно утверждение о поведении. Каждая проба
 проверяет ровно то поведение, которое отчёт объявил исправленным
@@ -17,8 +17,11 @@ VOID не считается ни HOLDS, ни BROKEN: молчаливый пр�
 идентификатор — сообщение об ошибке и код 2, а не молчаливый ноль: опечатка в
 идентификаторе не должна выглядеть как состоявшийся прогон.
 
-Ожидаемый результат на HEAD 60d755e: P1-1..P1-8 — HOLDS (фиксы заходов
-1-3 на месте), P1-9 и P1-10 — BROKEN (находки живы).
+Ожидаемый результат на базе: P1-1..P1-8 — HOLDS (фиксы заходов 1-3 на
+месте), P1-9 и P1-10 — BROKEN (находки живы). P1-9b — сторож обратной
+стороны P1-9: уборка истёкших ключей на базе работает, поэтому он HOLDS и
+до правки, и после. Красным он становится только если правка снесёт
+sweep()/maintain() вместе с удалением из get().
 """
 
 from __future__ import annotations
@@ -392,6 +395,74 @@ def probe_p1_9() -> Result:
     return HOLDS, f"get() вернул {value!r}, новых событий 0, строка в kv осталась"
 
 
+def probe_p1_9b() -> Result:
+    """Уборка истёкшего ключа жива: sweep() удаляет строку, а не только прячет.
+
+    Сторож обратной стороны P1-9, и по природе это не красный тест, а сторож
+    от регресса: на базе уборка работает, и проба обязана быть HOLDS и до
+    правки, и после. Красной она станет ровно в одном случае — если правка
+    снесёт уборку вместе с удалением из get().
+
+    Зачем нужна: после правки get() перестаёт удалять истёкший ключ, и
+    физическая уборка остаётся единственным местом, где строка исчезает.
+    Если Chisel уберёт удаление из get() и заодно выпотрошит sweep(), то
+    P1-9 останется HOLDS (get() ведь ничего не трогает), а истёкшие строки
+    начнут копиться молча. Пара «P1-9 HOLDS + P1-9b HOLDS» и означает, что
+    уборка перенесена, а не потеряна.
+
+    maintain() отдельного утверждения не заслуживает: он вызывает
+    self.sweep() (store.py:456), то есть идёт тем же путём. Его счётчик
+    снимается как вторая точка замера того же поведения — если правка
+    разведёт эти два входа, расхождение будет видно здесь.
+
+    Журнал измеряется, но не утверждается: на базе sweep() пишет строки
+    напрямую и события delete не порождает (замер — 0). Критерий карточки
+    называет событие delete частью уборки; факт вынесен в возврат, а не
+    замаскирован зелёным вердиктом.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="purr-p19b-"))
+    db = tmp / "kv.db"  # журнал обязан жить в файле данных, иначе Store бросает ValueError
+    journal = EventStream(str(db))
+    store = Store(str(db), journal=journal)
+    try:
+        store.set("k1", "v", ttl=0.1)
+        store.set("k2", "v", ttl=0.1)
+        time.sleep(0.25)
+        before, _ = journal.read()
+        swept = store.sweep()
+        after, _ = journal.read()
+        new_deletes = len([e for e in after[len(before) :] if e.payload.get("op") == "delete"])
+        conn = store._get_conn()
+        kv_left = conn.execute("SELECT COUNT(*) FROM kv WHERE key IN ('k1','k2')").fetchone()[0]
+        meta_left = conn.execute("SELECT COUNT(*) FROM kv_meta WHERE key IN ('k1','k2')").fetchone()[0]
+
+        store.set("k3", "v", ttl=0.1)
+        time.sleep(0.25)
+        maintain_swept = store.maintain()["swept"]
+        k3_left = store._get_conn().execute("SELECT COUNT(*) FROM kv WHERE key = 'k3'").fetchone()[0]
+    finally:
+        store.close()
+        journal.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if swept != 2 or kv_left or meta_left:
+        return BROKEN, (
+            f"sweep() по двум истёкшим ключам вернул {swept}, "
+            f"строк осталось: kv={kv_left}, kv_meta={meta_left} — "
+            "уборка истёкших ключей не удаляет"
+        )
+    if maintain_swept != 1 or k3_left:
+        return BROKEN, (
+            f"maintain() по одному истёкшему ключу сообщил swept={maintain_swept}, "
+            f"строк осталось {k3_left} — уборка через maintain() не удаляет"
+        )
+    return HOLDS, (
+        f"sweep() удалил 2 истёкших ключа (вернул {swept}), kv и kv_meta чисты; "
+        f"maintain() удалил ещё 1 (swept={maintain_swept}); "
+        f"событий delete от sweep() в журнале: {new_deletes}"
+    )
+
+
 def probe_p1_10() -> Result:
     """db_stats() видит фактический WAL для пути без суффикса.
 
@@ -429,6 +500,7 @@ PROBES = (
     ("P1-7 publish_sync", probe_p1_7),
     ("P1-8 два engine на файле", probe_p1_8),
     ("P1-9 get() мутирует", probe_p1_9),
+    ("P1-9b уборка жива", probe_p1_9b),
     ("P1-10 db_stats WAL", probe_p1_10),
 )
 
