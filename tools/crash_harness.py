@@ -62,10 +62,11 @@ def cmd_verify(db_path: str, keys_path: str) -> None:
     sys.exit(0 if not missing and integrity == "ok" else 1)
 
 
-def cmd_run(runs: int) -> None:
+def cmd_run(runs: int) -> int:
     python = sys.executable
     env = dict(os.environ)
     results = []
+    bad = 0
 
     for n in range(1, runs + 1):
         tmp = tempfile.mkdtemp(prefix="purr-crash-")
@@ -105,6 +106,10 @@ def cmd_run(runs: int) -> None:
                     "missing": confirmed[:10], "integrity": "VERIFY_FAILED",
                     "stderr": verify.stderr[-400:]}
 
+        # Вердикт выносит verify (у него правило одно), оркестратор его только переносит.
+        if verify.returncode != 0:
+            bad += 1
+
         data["run"] = n
         data["killed_at"] = len(confirmed)
         results.append(data)
@@ -122,6 +127,7 @@ def cmd_run(runs: int) -> None:
     print()
     print("ИТОГ: прогонов %d, подтверждено записей %d, потеряно %d, сломанная целостность в %s" % (
         len(results), total_confirmed, total_missing, bad_integrity or "нет"))
+    return 1 if bad else 0
 
 
 def cmd_write_txn(db_path: str) -> None:
@@ -175,7 +181,7 @@ def cmd_verify_txn(db_path: str, keys_path: str) -> None:
     sys.exit(0 if not missing_pre and not partial and integrity == "ok" else 1)
 
 
-def cmd_run_txn(runs: int) -> None:
+def cmd_run_txn(runs: int) -> int:
     python = sys.executable
     env = dict(os.environ)
     bad = 0
@@ -235,6 +241,7 @@ def cmd_run_txn(runs: int) -> None:
 
     print()
     print("ИТОГ: прогонов %d, брак %d" % (runs, bad))
+    return 1 if bad else 0
 
 
 def cmd_write_journal(kv_path: str, ev_path: str, slow: bool = False) -> None:
@@ -316,12 +323,13 @@ def cmd_verify_journal(kv_path: str, ev_path: str, keys_path: str) -> None:
              and integrity == "ok" and ev_integrity == "ok" else 1)
 
 
-def cmd_run_journal(runs: int, slow: bool = False) -> None:
+def cmd_run_journal(runs: int, slow: bool = False) -> int:
     python = sys.executable
     env = dict(os.environ)
     gaps = []
     phantoms = 0
     losses = 0
+    bad = 0
 
     for n in range(1, runs + 1):
         tmp = tempfile.mkdtemp(prefix="purr-jrn-")
@@ -362,6 +370,9 @@ def cmd_run_journal(runs: int, slow: bool = False) -> None:
                     "integrity": "VERIFY_FAILED", "journal_integrity": "?",
                     "stderr": verify.stderr[-300:]}
 
+        if verify.returncode != 0:
+            bad += 1
+
         gaps.append(data.get("gap", 0))
         phantoms += data.get("phantom", 0)
         losses += data.get("confirmed_missing", 0)
@@ -379,6 +390,7 @@ def cmd_run_journal(runs: int, slow: bool = False) -> None:
     print()
     print("ИТОГ: прогонов %d | потеряно подтверждённых %d | разрывов всего %d (макс %d) | фантомов %d" % (
         runs, losses, sum(gaps), max(gaps) if gaps else 0, phantoms))
+    return 1 if bad else 0
 
 
 
@@ -453,9 +465,10 @@ def cmd_verify_journal_txn(kv_path: str, ev_path: str) -> None:
     sys.exit(0 if len(tx_kv) in (0, 500) and len(tx_kv) == tx_ev and integrity == "ok" else 1)
 
 
-def cmd_run_journal_txn(runs: int) -> None:
+def cmd_run_journal_txn(runs: int) -> int:
     python = sys.executable
     env = dict(os.environ)
+    bad = 0
 
     for n in range(1, runs + 1):
         tmp = tempfile.mkdtemp(prefix="purr-jtxn-")
@@ -496,6 +509,9 @@ def cmd_run_journal_txn(runs: int) -> None:
                     "integrity": "VERIFY_FAILED", "journal_integrity": "?",
                     "stderr": verify.stderr[-300:]}
 
+        if verify.returncode != 0:
+            bad += 1
+
         print("run %d: маркер сброса=%s | tx в KV %d/500 | событий tx %d | разрыв %d | "
               "integrity %s / журнал %s" % (
                   n, "да" if os.path.exists(marker) else "НЕТ",
@@ -504,12 +520,15 @@ def cmd_run_journal_txn(runs: int) -> None:
         if data.get("stderr"):
             print("        stderr: %s" % data["stderr"].replace("\n", " ")[:250])
 
+    return 1 if bad else 0
 
-def main() -> None:
+
+def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(2)
     mode = sys.argv[1]
+    code = 0
     if mode == "write":
         cmd_write(sys.argv[2])
     elif mode == "write-txn":
@@ -527,18 +546,19 @@ def main() -> None:
     elif mode == "verify-journal-txn":
         cmd_verify_journal_txn(sys.argv[2], sys.argv[3])
     elif mode == "run-journal-txn":
-        cmd_run_journal_txn(int(sys.argv[2]) if len(sys.argv) > 2 else 3)
+        code = max(code, cmd_run_journal_txn(int(sys.argv[2]) if len(sys.argv) > 2 else 3))
     elif mode == "run":
-        cmd_run(int(sys.argv[2]) if len(sys.argv) > 2 else 5)
+        code = max(code, cmd_run(int(sys.argv[2]) if len(sys.argv) > 2 else 5))
     elif mode == "run-txn":
-        cmd_run_txn(int(sys.argv[2]) if len(sys.argv) > 2 else 5)
+        code = max(code, cmd_run_txn(int(sys.argv[2]) if len(sys.argv) > 2 else 5))
     elif mode == "run-journal":
-        cmd_run_journal(int(sys.argv[2]) if len(sys.argv) > 2 else 5,
-                        len(sys.argv) > 3 and sys.argv[3] == "slow")
+        code = max(code, cmd_run_journal(int(sys.argv[2]) if len(sys.argv) > 2 else 5,
+                                         len(sys.argv) > 3 and sys.argv[3] == "slow"))
     else:
         print("неизвестный режим: %s" % mode)
         sys.exit(2)
+    return code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
