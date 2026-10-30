@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
+- **The journal event shape changed.** `flush()` now emits one
+  `{"op": "flush"}` event instead of a `delete` per key, and `set`/`incr`/
+  `mset` events carry `expires_at` when the key has an expiry. A consumer
+  that replays the journal must handle the new op and the new field; one
+  that only reads `op`/`key`/`value` is unaffected.
 - **The journal is co-located with the data (ADR-001, variant C).** `Store`
   and `StateMachine` now reject a journal that lives in another file:
   `Store("purr.db", journal=EventStream("events.db"))` raises `ValueError` at
@@ -117,10 +122,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ValueError`: use `reset_cursor(name)` to clear a cursor on purpose.
 
 ### Fixed
-- `sweep()` and `flush()` now journal every removal. Both deleted rows with
-  raw SQL and wrote no event, so a journal replay kept the removed keys
-  alive: the audit log disagreed with the database and nothing reported it.
-  A replay of the journal now reaches the same key set as the store.
+- `sweep()` journals every removal and `flush()` writes a single `flush`
+  event. Both used to delete rows with raw SQL and write nothing, so a
+  replay kept the removed keys alive. One event for `flush` instead of one
+  per key: the journal should grow with operations, not with rows —
+  measured on 50 000 keys, per-key events took the call from 122 ms to
+  1.6 s and grew the file by half.
+- `set(..., ttl=)`, `incr()` and `mset()` now record `expires_at` in the
+  journal event when the key has an expiry. Without it a replay turned a
+  key that should vanish into one that lives forever. Events for keys
+  without a TTL carry no such field, so journals written before this
+  change replay exactly as they did.
 - P1-1: failed `BEGIN IMMEDIATE` no longer poisons the transaction flag
   (records were silently lost afterwards).
 - P1-2: transaction flag is thread-local, matching the per-thread
