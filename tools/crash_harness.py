@@ -323,7 +323,7 @@ def cmd_verify_journal(kv_path: str, ev_path: str, keys_path: str) -> None:
         "integrity": integrity,
         "journal_integrity": ev_integrity,
     }))
-    sys.exit(0 if not confirmed_missing and not phantom
+    sys.exit(0 if not confirmed_missing and not phantom and not gap
              and integrity == "ok" and ev_integrity == "ok" else 1)
 
 
