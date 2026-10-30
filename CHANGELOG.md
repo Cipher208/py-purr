@@ -233,6 +233,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is reported as `UNHEALTHY` with the offending type in the message (pass-8):
   the status used to be left unchanged, so a check returning `"ok"` silently
   counted as neither healthy nor unhealthy.
+- `db_stats()` reports the real WAL size for a database path without a file
+  extension. SQLite appends to the whole file name (`store` → `store-wal`,
+  `store.db` → `store.db-wal`), but the size was read from `<path>.db-wal`,
+  which does not exist, so a suffix-less database answered `wal_bytes: 0` no
+  matter how much WAL was on disk — 61 832 bytes in the audit probe, and a
+  monitor reading `db_stats()` saw an empty WAL. Paths with a `.db` suffix and
+  `:memory:` report exactly what they did before.
 
 ### Added
 - `EventStream(..., max_events=..., max_age_seconds=...)` retention limits
