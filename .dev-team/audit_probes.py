@@ -889,7 +889,7 @@ PROBES = (
     ("P1-6 saga re-execute", probe_p1_6),
     ("P1-7 publish_sync", probe_p1_7),
     ("P1-8 два engine на файле", probe_p1_8),
-    ("P1-9 чтение мутирует", probe_p1_9),
+    ("P1-9 чтение не пишет", probe_p1_9),
     ("P1-9b уборка жива", probe_p1_9b),
     ("P1-10 db_stats WAL", probe_p1_10),
     ("P1-10b WAL при суффиксе", probe_p1_10b),
