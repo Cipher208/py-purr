@@ -1,16 +1,24 @@
-"""The working tree must agree with git about line endings.
+"""The working tree must agree with git wherever `.gitattributes` pins LF.
 
-`.gitattributes` declares `text eol=lf`, so git stores LF in the index and checks
-LF out. Nothing keeps the *working copy* that way afterwards: a file rewritten by
-a CRLF-emitting tool normalises back to the same blob on commit, so `git status`
-stays clean while the bytes on disk disagree with the index. That disagreement is
-invisible, and it silently defeats every string replacement written against
-`"\\n"` — the pattern simply never matches.
+`.gitattributes` declares `text eol=lf` for a set of extensions, so git stores LF
+in the index and checks LF out. Nothing keeps the *working copy* that way
+afterwards: a file rewritten by a CRLF-emitting tool normalises back to the same
+blob on commit, so `git status` stays clean while the bytes on disk disagree with
+the index. That disagreement is invisible, and it silently defeats every string
+replacement written against `"\\n"` — the pattern simply never matches.
 
-So the check cannot be `git status`; it has to read the bytes. This module reads
-only files git tracks (an untracked file is not part of the contract), skips what
-`.gitattributes` marks binary, and names each offender together with its line
-count so the repair is addressable rather than "somewhere there is a CRLF".
+The scope is the declared contract, not "every text file", and the difference is
+measured rather than assumed. With `core.autocrlf=true` (this machine), a file
+covered only by `* text=auto` — `.gitattributes` itself, `.gitignore`, `LICENSE` —
+is checked out CRLF by git on purpose. Reporting those would make the check red in
+a pristine clone and blame the repository for the developer's git config. So the
+extension set is read out of `.gitattributes`: whatever it pins to `eol=lf`, this
+module holds to `eol=lf`.
+
+The check cannot be `git status`; it has to read the bytes. Only files git tracks
+are read (an untracked file is not part of the contract), and each offender is
+named with its line count so the repair is addressable rather than "somewhere
+there is a CRLF".
 """
 
 from __future__ import annotations
@@ -19,13 +27,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
-# The same set `.gitattributes` marks `binary`. A binary file has no line
-# endings to be consistent about, and decoding it as text would either raise or,
-# worse, succeed by accident and report a false offender.
-BINARY_EXTENSIONS = frozenset(
-    {".png", ".jpg", ".jpeg", ".gif", ".sqlite", ".db", ".pyc"}
-)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -55,6 +56,27 @@ def _in_git_work_tree(root: Path) -> bool:
     return probe.returncode == 0
 
 
+def enforced_extensions(root: Path) -> frozenset[str]:
+    """Extensions `.gitattributes` pins to LF, lower-cased, leading dot kept.
+
+    Only `*.ext` patterns count. The catch-all `* text=auto` is not a promise
+    about line endings — it defers to `core.autocrlf` — and treating it as one
+    would put the whole disk in scope and make the result depend on each
+    developer's git config.
+    """
+    extensions: set[str] = set()
+    for raw in (root / ".gitattributes").read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        pattern, *attributes = line.split()
+        if "eol=lf" not in [attribute.lower() for attribute in attributes]:
+            continue
+        if pattern.startswith("*.") and "/" not in pattern:
+            extensions.add(pattern[1:].lower())
+    return frozenset(extensions)
+
+
 def tracked_files(root: Path) -> list[str]:
     """Paths git tracks under `root`, repo-relative, posix-style.
 
@@ -68,22 +90,23 @@ def tracked_files(root: Path) -> list[str]:
 
 
 def find_crlf_files(root: Path) -> list[tuple[str, int]]:
-    """Every tracked text file under `root` holding CRLF, with its CRLF count.
+    """Tracked files under `root` that `eol=lf` covers but that hold CRLF.
 
     Counting is done on bytes, not on text: a universal-newline read translates
     `\\r\\n` away and would report a clean tree. Empty files and files without
     any newline carry no CRLF and therefore never appear here.
     """
+    extensions = enforced_extensions(root)
     offenders: list[tuple[str, int]] = []
     for name in tracked_files(root):
-        if Path(name).suffix.lower() in BINARY_EXTENSIONS:
+        if Path(name).suffix.lower() not in extensions:
             continue
         data = (root / name).read_bytes()
         try:
             data.decode("utf-8")
         except UnicodeDecodeError:
-            # Not text: an extension the attributes file does not know about
-            # (an image, an archive, a stray dump) still must not be judged.
+            # An extension pinned to eol=lf that holds non-text bytes is its own
+            # problem; this check is about line endings and does not judge it.
             continue
         crlf = data.count(b"\r\n")
         if crlf:
@@ -93,8 +116,8 @@ def find_crlf_files(root: Path) -> list[tuple[str, int]]:
 
 def _report(offenders: list[tuple[str, int]]) -> str:
     lines = [
-        f"{len(offenders)} tracked text file(s) hold CRLF in the working tree "
-        f"while .gitattributes declares eol=lf:",
+        f"{len(offenders)} tracked file(s) hold CRLF in the working tree while "
+        f".gitattributes pins their extension to eol=lf:",
     ]
     lines += [f"  {name}: {count} CRLF line(s)" for name, count in offenders]
     lines.append(
@@ -118,12 +141,21 @@ def test_working_tree_matches_git_on_line_endings() -> None:
     assert offenders == [], _report(offenders)
 
 
+def test_gitattributes_pins_python_to_lf() -> None:
+    """Guard against the check going green because the contract was deleted.
+
+    If the `*.py text eol=lf` line disappears, the extension set empties, nothing
+    is inspected, and the module passes over zero files. That is the failure this
+    test refuses to let pass silently.
+    """
+    assert ".py" in enforced_extensions(REPO_ROOT)
+
+
 def test_git_lists_tracked_files() -> None:
     """Guard against the check passing because git answered nothing.
 
     A failed or misdirected `git ls-files` yields an empty list, and an empty
-    list yields no offenders — a green gate over zero files. This test makes
-    that failure visible instead of silent.
+    list yields no offenders — a green gate over zero files.
     """
     assert tracked_files(REPO_ROOT) != []
 
@@ -136,21 +168,31 @@ def test_detector_counts_crlf_lines_per_file(tmp_path: Path) -> None:
     line-ending check that trips over them is unusable.
     """
     _git(tmp_path, "init", "-q")
+    (tmp_path / ".gitattributes").write_bytes(b"*.py text eol=lf\n")
     (tmp_path / "crlf.py").write_bytes(b"one\r\ntwo\r\n")
     (tmp_path / "empty.py").write_bytes(b"")
     (tmp_path / "single.py").write_bytes(b"no newline here")
-    _git(tmp_path, "add", "crlf.py", "empty.py", "single.py")
+    _git(tmp_path, "add", ".gitattributes", "crlf.py", "empty.py", "single.py")
 
     assert find_crlf_files(tmp_path) == [("crlf.py", 2)]
 
 
-def test_detector_ignores_binary_and_untracked_files(tmp_path: Path) -> None:
-    """CRLF is not a defect in a PNG, and an untracked file is not in the contract."""
+def test_detector_ignores_out_of_contract_files(tmp_path: Path) -> None:
+    """Three ways a file can carry CRLF and still not be a defect.
+
+    Not tracked: outside the contract with git. Not a pinned extension: the
+    attributes file makes no promise, so git's `core.autocrlf` decides. Pinned
+    but binary: it has no line endings to be consistent about.
+    """
     _git(tmp_path, "init", "-q")
-    (tmp_path / "tracked.py").write_bytes(b"clean\n")
+    (tmp_path / ".gitattributes").write_bytes(
+        b"*.py text eol=lf\n*.png binary\n*.db binary\n"
+    )
+    (tmp_path / "clean.py").write_bytes(b"clean\n")
+    (tmp_path / "notes.log").write_bytes(b"one\r\ntwo\r\n")
     (tmp_path / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\r\n")
     (tmp_path / "dump.db").write_bytes(b"header\r\npayload\r\n")
     (tmp_path / "untracked.py").write_bytes(b"one\r\ntwo\r\n")
-    _git(tmp_path, "add", "tracked.py", "image.png", "dump.db")
+    _git(tmp_path, "add", ".gitattributes", "clean.py", "notes.log", "image.png", "dump.db")
 
     assert find_crlf_files(tmp_path) == []
