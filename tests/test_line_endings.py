@@ -185,9 +185,7 @@ def test_detector_ignores_out_of_contract_files(tmp_path: Path) -> None:
     but binary: it has no line endings to be consistent about.
     """
     _git(tmp_path, "init", "-q")
-    (tmp_path / ".gitattributes").write_bytes(
-        b"*.py text eol=lf\n*.png binary\n*.db binary\n"
-    )
+    (tmp_path / ".gitattributes").write_bytes(b"*.py text eol=lf\n*.png binary\n*.db binary\n")
     (tmp_path / "clean.py").write_bytes(b"clean\n")
     (tmp_path / "notes.log").write_bytes(b"one\r\ntwo\r\n")
     (tmp_path / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\r\n")
