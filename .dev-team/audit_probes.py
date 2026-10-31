@@ -26,7 +26,10 @@ sweep()/maintain() вместе с удалением из get(). P1-10b — с�
 базе, поэтому он тоже HOLDS до правки и после. Красным он становится, если
 сайдкар вычислят приписыванием: `<path>.db-wal` для `store.db` даёт
 `store.db.db-wal`, которого нет, и db_stats соврёт нулём там, где сегодня
-сообщает правду.
+сообщает правду. P1-2b — поведенческая половина P1-2: не чтение флага, а его
+следствие. Поток B входит в свою transaction() при открытой транзакции потока A
+и обязан отработать; при общем на инстанс флаге он получает ложный «nested
+transaction».
 """
 
 from __future__ import annotations
@@ -159,6 +162,160 @@ def probe_p1_2() -> Result:
         )
     return HOLDS, (
         f"флаг в потоке {seen.get('thread')}, в главном потоке {seen.get('main')} — per-thread"
+    )
+
+
+def probe_p1_2b() -> Result:
+    """Второй поток входит в свою transaction() при открытой чужой — без «nested».
+
+    P1-2 читает `store._in_transaction` из двух потоков и утверждает, что флаг
+    per-thread. Это проверка реализации: она подтверждает устройство флага, но
+    не показывает, что видит пользователь. Здесь проверяется следствие:
+
+      поток A держит `with store.transaction()` — BEGIN IMMEDIATE, write-lock;
+      поток B входит в свою `transaction()`: соединение у него своё
+      (backend.py:130-155, соединение в threading.local) и своей транзакции ещё
+      не было, поэтому он обязан дождаться чужой блокировки и отработать;
+      третий `Store` на тот же файл читает запись B снаружи, а не из памяти.
+
+    На per-thread флаге (store.py:51-58) B проходит проверку `if
+    self._in_transaction` и ждёт блокировку. Сделай флаг общим на инстанс — B
+    читает чужой True и получает `RuntimeError: nested transaction() is not
+    supported` (store.py:102-103), хотя вложенной транзакции не открывал.
+
+    Поэтому вердикт называет наблюдение, а не флаг: HOLDS — второй поток
+    отработал и его запись видна снаружи; BROKEN — второй поток получил
+    `nested transaction` (с текстом ошибки); VOID — замер не состоялся: поток
+    не завершился за таймаут, A упал, или B упёрся в чужую блокировку
+    («database is locked») — это тоже не про флаг, и выдать его за HOLDS
+    значило бы соврать.
+
+    Запись A читается третьим соединением как контроль канала чтения: если
+    снаружи не видно даже её, «запись B видна» ничего не доказывает. Пока B
+    внутри transaction(), main отдельным соединением проверяет, что write-lock
+    занят: свободен — чужой транзакции в этот момент не было, и это VOID, а не
+    HOLDS.
+    """
+    timeout = 5.0
+    tmp = Path(tempfile.mkdtemp(prefix="purr-p12b-"))
+    db = tmp / "kv.db"
+    store = Store(str(db))
+    a_inside = threading.Event()
+    b_starting = threading.Event()
+    release = threading.Event()
+    b_finished = threading.Event()
+    observed: dict[str, str] = {}
+
+    def thread_a() -> None:
+        try:
+            with store.transaction():
+                store.set("a", "from-a")
+                a_inside.set()
+                # Блокировку держим, пока main не разрешит отпустить: тогда
+                # BEGIN потока B заведомо упирается в открытую транзакцию A, а
+                # не проскакивает в щель между стартом B и коммитом A.
+                if not release.wait(timeout):
+                    observed["a_wait"] = f"main не отпустил блокировку за {timeout} с"
+        except BaseException as exc:  # noqa: BLE001 - любая ошибка A срывает сетап
+            observed["a_error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            store.close()
+
+    def thread_b() -> None:
+        try:
+            if not a_inside.wait(timeout):
+                observed["b_wait"] = f"A не вошёл в transaction() за {timeout} с"
+                return
+            started_at = time.monotonic()
+            b_starting.set()
+            with store.transaction():
+                store.set("b", "from-b")
+            observed["b"] = f"вход занял {time.monotonic() - started_at:.3f} с"
+        except RuntimeError as exc:
+            observed["b_nested"] = str(exc)
+        except BaseException as exc:  # noqa: BLE001 - блокировка, таймаут, что угодно
+            observed["b_error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            b_finished.set()
+            store.close()
+
+    reader: Store | None = None
+    seen_a: Any = None
+    seen_b: Any = None
+    lock_free = True
+    try:
+        threads = [
+            threading.Thread(target=thread_a, daemon=True),
+            threading.Thread(target=thread_b, daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        if not a_inside.wait(timeout) or not b_starting.wait(timeout):
+            observed.setdefault("b_wait", f"A и B не встретились за {timeout} с")
+        else:
+            # Замер, а не чтение флага: пока B внутри своей transaction(),
+            # write-lock обязан быть занят транзакцией A. Свободен — сценарий
+            # не воспроизведён, и выносить вердикт не по чему.
+            lock = sqlite3.connect(str(db), timeout=0.2, isolation_level=None)
+            try:
+                lock.execute("BEGIN IMMEDIATE")
+                lock.execute("ROLLBACK")
+                lock_free = True
+            except sqlite3.OperationalError:
+                lock_free = False
+            finally:
+                lock.close()
+        release.set()
+        finished = b_finished.wait(timeout * 2)
+        for thread in threads:
+            thread.join(timeout)
+        if not finished:
+            return VOID, f"поток B не завершился за {timeout * 2} с — замер не состоялся"
+        if "a_error" in observed:
+            return VOID, f"транзакция потока A упала: {observed['a_error']} — сетап не состоялся"
+        for key in ("a_wait", "b_wait"):
+            if key in observed:
+                return VOID, observed[key]
+        if "b_nested" in observed:
+            return BROKEN, (
+                "второй поток получил RuntimeError при открытой чужой транзакции: "
+                f"{observed['b_nested']!r} — у него своё соединение и своей транзакции "
+                "не было, значит флаг транзакции общий на инстанс"
+            )
+        if "b_error" in observed:
+            return VOID, (
+                f"второй поток не дошёл до записи: {observed['b_error']} — "
+                "это не про флаг, вердикт не выносится"
+            )
+        if lock_free:
+            return VOID, (
+                "write-lock свободен, пока поток B был внутри transaction() — "
+                "чужой транзакции в этот момент не было, сценарий не воспроизведён"
+            )
+        reader = Store(str(db))
+        seen_a = reader.get("a")
+        seen_b = reader.get("b")
+    finally:
+        release.set()
+        if reader is not None:
+            reader.close()
+        store.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if seen_a != "from-a":
+        return VOID, (
+            f"третье соединение не видит запись потока A ({seen_a!r}) — "
+            "канал чтения сломан, замер не состоялся"
+        )
+    if seen_b != "from-b":
+        return BROKEN, (
+            "второй поток отработал без ошибки, но его запись не видна третьему "
+            f"соединению: get('b')={seen_b!r}, ожидалось 'from-b'"
+        )
+    return HOLDS, (
+        f"поток A держал transaction() (write-lock был занят), поток B вошёл в свою "
+        f"({observed['b']}) без ошибки и записал 'b'='from-b'; третье соединение видит "
+        f"обе записи (a={seen_a!r}, b={seen_b!r})"
     )
 
 
@@ -596,6 +753,7 @@ def probe_p1_10b() -> Result:
 PROBES = (
     ("P1-1 флаг транзакции", probe_p1_1),
     ("P1-2 флаг между потоками", probe_p1_2),
+    ("P1-2b второй поток в transaction", probe_p1_2b),
     ("P1-3 incr атомарен", probe_p1_3),
     ("P1-4 incr не воскрешает", probe_p1_4),
     ("P1-5 append-only", probe_p1_5),
