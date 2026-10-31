@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import random
 import sqlite3
-import time
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,6 +18,40 @@ from purr.retry import RetryConfig, RetryHandler
 from purr.state_machine import StateMachine
 
 from .test_fixer_perf_pragmas import _SqlLog
+
+
+class _CountingExecute:
+    """Connection proxy that records every statement the store issues.
+
+    Taken in through `_get_conn` — the same seam the probes in
+    `.dev-team/audit_probes.py` use — so what is counted is what the store
+    itself asked for. No driver-level batching can hide a per-key loop behind
+    one call, and the number does not depend on how fast the machine is.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, calls: list[str]) -> None:
+        self._conn = conn
+        self._calls = calls
+
+    def execute(self, sql: str, *args: Any) -> sqlite3.Cursor:
+        self._calls.append(sql)
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+class _CountingStore(Store):
+    """Store whose connection counts statements, through `_get_conn`."""
+
+    def __init__(self, db_path: str | Path) -> None:
+        # Before super().__init__: it calls _init_db -> _get_conn, which needs
+        # the list to already exist.
+        self.calls: list[str] = []
+        super().__init__(db_path)
+
+    def _get_conn(self) -> Any:
+        return _CountingExecute(super()._get_conn(), self.calls)
 
 
 class TestCycle1BatchMget:
@@ -93,25 +128,42 @@ class TestCycle1BatchMget:
         finally:
             store.close()
 
-    def test_mget_1000_keys_is_faster_than_per_key_get(self, tmp_path):
-        """Timing record for the batch rewrite (1000 keys, temp db)."""
-        store = Store(tmp_path / "s.db")
+    def test_mget_reads_the_batch_in_one_query(self, tmp_path):
+        """A batch costs two statements; a per-key loop costs two per key.
+
+        Before the rewrite mget() was `[self.get(key) for key in keys]`: 1000
+        keys cost 2000 execute() calls. Counting statements, not seconds, is
+        what separates a batch from a loop — a fast machine cannot make a loop
+        look batched, and a loaded one cannot make a batch look slow.
+
+        Two is a ceiling, not a target: mget() issues one statement for the
+        expired set and one for the values, so a rewrite that folds them into
+        one passes, and a rewrite that goes back to a per-key loop does not.
+        The answers are compared too — one statement is only worth it if it
+        answers the same as 1000 reads.
+        """
+        store = _CountingStore(tmp_path / "s.db")
         try:
             keys = [f"k{i}" for i in range(1000)]
-            store.mset({k: i for i, k in enumerate(keys)})
-            store.mget(keys)  # warm
+            store.mset({key: index for index, key in enumerate(keys)})
 
-            start = time.perf_counter()
-            store.mget(keys)
-            batch_ms = (time.perf_counter() - start) * 1000
-
-            start = time.perf_counter()
-            [store.get(k) for k in keys]
-            per_key_ms = (time.perf_counter() - start) * 1000
-
-            assert batch_ms < per_key_ms / 2, (
-                f"mget {batch_ms:.2f} ms vs per-key get {per_key_ms:.2f} ms"
+            store.calls.clear()
+            batch = store.mget(keys)
+            batch_calls = len(store.calls)
+            assert batch_calls <= 2, (
+                f"mget of {len(keys)} keys issued {batch_calls} statements, expected at most 2 "
+                f"(expired set + values); first statements: {store.calls[:4]}"
             )
+
+            store.calls.clear()
+            per_key = [store.get(key) for key in keys]
+            per_key_calls = len(store.calls)
+            assert per_key_calls >= len(keys), (
+                f"{len(keys)} per-key reads issued {per_key_calls} statements, "
+                f"expected at least {len(keys)}"
+            )
+
+            assert batch == per_key, "one statement is only worth it if the answer matches"
         finally:
             store.close()
 
