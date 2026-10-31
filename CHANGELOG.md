@@ -129,7 +129,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   An empty database reported `gap 0` and exited `0`, so a writer that died
   before its first confirmed key looked exactly like a clean run. It now
   prints `ПРОГОН НЕ СОСТОЯЛСЯ` and exits `1`, the same guard
-  `run-journal-txn` already had.- `sweep()` journals every removal and `flush()` writes a single `flush`
+  `run-journal-txn` already had.
+- `sweep()` journals every removal and `flush()` writes a single `flush`
   event. Both used to delete rows with raw SQL and write nothing, so a
   replay kept the removed keys alive. One event for `flush` instead of one
   per key: the journal should grow with operations, not with rows —
