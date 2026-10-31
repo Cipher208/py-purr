@@ -29,7 +29,8 @@ sweep()/maintain() вместе с удалением из get(). P1-10b — с�
 сообщает правду. P1-2b — поведенческая половина P1-2: не чтение флага, а его
 следствие. Поток B входит в свою transaction() при открытой транзакции потока A
 и обязан отработать; при общем на инстанс флаге он получает ложный «nested
-transaction».
+transaction». P1-3b — детерминированная половина P1-3: задержка записи внутри
+incr() вместо вероятностной гонки потоков.
 """
 
 from __future__ import annotations
@@ -356,6 +357,133 @@ def probe_p1_3() -> Result:
     if value != expected:
         return BROKEN, f"{threads_n} потоков × {per_thread} incr → {value} вместо {expected} (потеряно {expected - (value or 0)})"
     return HOLDS, f"{threads_n} потоков × {per_thread} incr → ровно {value}"
+
+
+class _DelayedExecute:
+    """Прокси соединения: спит перед записью внутри incr().
+
+    Окно гонки делается заведомо шире разброса планировщика: чтение (SELECT)
+    проходит сразу, а UPDATE/INSERT стоит перед выполнением. Тогда при
+    отсутствии BEGIN IMMEDIATE второй поток успевает прочитать то же значение,
+    пока первый спит, — потерянное обновление становится следствием порядка
+    операций, а не удачного стечения потоков.
+    """
+
+    def __init__(
+        self, conn: sqlite3.Connection, delay: float, markers: tuple[str, ...], slept: list[float]
+    ) -> None:
+        self._conn = conn
+        self._delay = delay
+        self._markers = markers
+        self._slept = slept
+
+    def execute(self, sql: str, *args: Any) -> sqlite3.Cursor:
+        if self._delay > 0 and any(marker in sql for marker in self._markers):
+            self._slept.append(time.monotonic())
+            time.sleep(self._delay)
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+class _DelayedWriteStore(Store):
+    """Store, чьё соединение задерживает запись внутри incr() на DELAY_S.
+
+    Подмена идёт через `_get_conn`, как и в остальных пробах файла: `incr`
+    берёт соединение этим методом (store.py:316), поэтому задержка стоит ровно
+    на пути записи, а сам `incr` остаётся продакшн-кодом.
+    """
+
+    DELAY_S = 0.5
+    WRITE_MARKERS = ("UPDATE kv SET value", "INSERT OR REPLACE INTO kv")
+
+    def __init__(self, db_path: str | Path, slept: list[float]) -> None:
+        # До super().__init__: он зовёт _init_db -> _get_conn, а тому нужен прокси.
+        self._slept = slept
+        super().__init__(db_path)
+
+    def _get_conn(self) -> Any:
+        return _DelayedExecute(super()._get_conn(), self.DELAY_S, self.WRITE_MARKERS, self._slept)
+
+
+def probe_p1_3b() -> Result:
+    """incr атомарен: потерянное обновление воспроизводится задержкой записи.
+
+    P1-3 ловит ту же потерю вероятностной гонкой (4 потока × 200 incr) и
+    зависит от планировщика: гонка может не случиться, и проба скажет HOLDS о
+    сломанном коде. Здесь окно гонки задано явно.
+
+    `_get_conn` возвращает прокси, который спит 0.5 с перед `UPDATE kv SET
+    value` и перед `INSERT OR REPLACE INTO kv` — перед записью внутри incr, но
+    не перед чтением. Ключ `ctr` уже равен 0. Два потока стартуют с одного
+    барьера и делают по одному `incr('ctr')`:
+
+      с BEGIN IMMEDIATE (store.py:324-325) поток A берёт write-lock до чтения,
+      поток B стоит на своём BEGIN до коммита A, читает уже 1, пишет 2 → итог 2;
+      без BEGIN IMMEDIATE оба SELECT успевают до первой задержки, оба читают 0,
+      оба пишут 1 → итог 1, один инкремент потерян.
+
+    Вердикт называет наблюдение: 2 → HOLDS; 1 → BROKEN (оба прочитали одно
+    значение); иное значение или исключение → VOID. Отдельный VOID — если
+    прокси не спал ни разу: сценарий не воспроизведён, и назвать это HOLDS
+    значило бы принять сломанную подмену за доказательство.
+    """
+    timeout = 30.0
+    tmp = Path(tempfile.mkdtemp(prefix="purr-p13b-"))
+    slept: list[float] = []
+    errors: list[str] = []
+    returns: dict[int, int] = {}
+    store = _DelayedWriteStore(str(tmp / "kv.db"), slept)
+    try:
+        store.set("ctr", 0)
+        barrier = threading.Barrier(2, timeout=timeout)
+
+        def worker(idx: int) -> None:
+            try:
+                # Соединение создаётся до барьера: connect и pragmas не должны
+                # попадать в окно гонки, которое здесь измеряется.
+                store._get_conn()
+                barrier.wait()
+                returns[idx] = store.incr("ctr")
+            except BaseException as exc:  # noqa: BLE001 - любая ошибка означает, что замер не состоялся
+                errors.append(f"поток {idx}: {type(exc).__name__}: {exc}")
+            finally:
+                store.close()
+
+        threads = [threading.Thread(target=worker, args=(idx,), daemon=True) for idx in (1, 2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout)
+        alive = [thread.name for thread in threads if thread.is_alive()]
+        if alive:
+            return VOID, f"потоки не завершились за {timeout} с: {alive} — замер не состоялся"
+        if errors:
+            return VOID, f"incr падал в потоках, замер не состоялся: {errors}"
+        final = store.get("ctr")
+    finally:
+        store.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if len(slept) < 2:
+        return VOID, (
+            f"прокси спал {len(slept)} раз(а) вместо двух — задержка не сработала, "
+            "сценарий не воспроизведён"
+        )
+    if final == 2:
+        return HOLDS, (
+            "оба потока с барьера по одному incr('ctr') из 0: write-lock брался до "
+            f"чтения, итог {final}; incr вернул {sorted(returns.items())}, "
+            f"задержка записи срабатывала {len(slept)} раза"
+        )
+    if final == 1:
+        return BROKEN, (
+            f"два потока по одному incr('ctr') из 0 → {final} вместо 2 "
+            f"(incr вернул {sorted(returns.items())}): оба потока прочитали одно "
+            "значение 0 и один инкремент потерян — чтение и запись не под одним write-lock"
+        )
+    return VOID, f"итоговое значение {final!r} вместо 1 или 2 — замер не состоялся"
 
 
 def probe_p1_4() -> Result:
@@ -755,6 +883,7 @@ PROBES = (
     ("P1-2 флаг между потоками", probe_p1_2),
     ("P1-2b второй поток в transaction", probe_p1_2b),
     ("P1-3 incr атомарен", probe_p1_3),
+    ("P1-3b incr потерянное обновление", probe_p1_3b),
     ("P1-4 incr не воскрешает", probe_p1_4),
     ("P1-5 append-only", probe_p1_5),
     ("P1-6 saga re-execute", probe_p1_6),
