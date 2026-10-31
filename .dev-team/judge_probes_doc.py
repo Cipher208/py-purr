@@ -5,14 +5,21 @@
 создании файла, но находки закрыты, прогон даёт `HOLDS 14, BROKEN 0`, а тегов
 `accept-*` («базы») больше нет. Документация обещала исход, которого нет.
 
-Три проверки, каждая — одно утверждение:
+Тот же оборот стоял не только в модульном docstring: у каждой пробы своя проза,
+и «на базе» нашлось в docstring'ах `probe_p1_9b` (строки 750 и 766) и
+`probe_p1_10b` (строка 847). Судья, читающий только модульный docstring,
+проверял половину дефекта, поэтому проверка 4 обходит все docstring'и модуля.
+
+Четыре проверки, каждая — одно утверждение:
   1. нет устаревшего обещания — в docstring модуля нет ни одного оборота из
      FORBIDDEN_PHRASES и ни одного вердикта вида «P1-N — BROKEN» вне условной
      конструкции («... если ...»);
   2. инвариант сформулирован — docstring утверждает, что на текущем `main` все
      пробы дают HOLDS, а BROKEN означает регресс;
   3. прогон подтверждает инвариант — `audit_probes.py` возвращает 0 и печатает
-     `BROKEN 0`.
+     `BROKEN 0`;
+  4. ссылки на базу нет ни в одном docstring'е — оборота «на базе» нет ни в
+     модульном docstring'е, ни в docstring'ах функций, методов и классов.
 
 Проверка 1 — запрет, проверка 2 — требование, и по отдельности каждая
 вакуумна: на пустом docstring запрет молчит, а текст без запрещённых оборотов
@@ -46,9 +53,18 @@
 привязки к `main`/текущему состоянию это описание кода возврата, а не
 утверждение об инварианте.
 
+Проверка 4 устроена иначе: она не формулирует требование, а обходит дерево и
+берёт docstring каждого узла, поэтому видит и прозу проб, которую проверка 1
+прочитать не может. Место называется парой «имя узла:строка»: на файле в 900
+строк возврат «где-то есть оборот» не адресуем. Строка считается от строки
+литерала плюс число переносов до совпадения, поэтому два оборота в одном
+docstring'е дают две разные строки, а не одну. Обход нулевой: если docstring'ов
+не нашлось ни одного, проверка 4 падает — пустой обход не доказывает отсутствия
+оборота.
+
 Причина падения печатается в форме `AssertionError: ...`: красный прогон
 обязан называть упавшее утверждение и значение, а не только слово FAIL.
-Код возврата: 0 — все три PASS, 1 — есть FAIL, 2 — судья сломался сам
+Код возврата: 0 — все четыре PASS, 1 — есть FAIL, 2 — судья сломался сам
 (исключение не является ассертом, вердикт не выносится).
 """
 
@@ -78,6 +94,17 @@ FORBIDDEN_PHRASES = (
 # Вердикт пробы, обещанный без условия: «P1-9 и P1-10 — BROKEN».
 _VERDICT_PROMISE = re.compile(r"p1-\d+[a-z]?\s*(?:и\s+p1-\d+[a-z]?\s*)?-\s*broken")
 _CONDITIONAL = re.compile(r"\b(если|когда|при|в случае)\b")
+
+# Ссылка на базу, которой больше нет. Проверка 4 ищет её во всех docstring'ах, а
+# не только в модульном. Шаблон терпит перенос строки внутри оборота
+# («на\n    базе»): иначе вёрстка по 79 символов прячет его от поиска.
+_BASE_REFERENCE = re.compile(r"на\s+базе", re.IGNORECASE)
+
+# Узлы, у которых `ast.get_docstring` вообще имеет право быть вызванным: на
+# остальных он бросает TypeError, и судья вернул бы 2 («сломался сам») вместо
+# вердикта. Замерено: `get_docstring` на `ast.Expr` — `TypeError: 'Expr' can't
+# have docstrings`.
+_DOCSTRING_NODES = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 
 # Инвариант «на текущем main все пробы HOLDS». Порядок слов любой, но все три
 # части обязаны стоять в одном предложении: «все HOLDS» без привязки к main —
@@ -117,6 +144,56 @@ def module_docstring() -> str:
     """
     tree = ast.parse(PROBES_PATH.read_bytes().decode("utf-8"), filename=str(PROBES_PATH))
     return ast.get_docstring(tree, clean=False) or ""
+
+
+def _docstring_parents(tree: ast.AST) -> dict[ast.AST, ast.AST]:
+    """Родитель каждого узла дерева.
+
+    `ast.walk` отдаёт узлы без ссылки вверх, а имя docstring'а собирается как
+    раз снизу вверх (`Store.sweep`, а не `sweep`). Карта строится тем же
+    обходом: для каждого узла перечисляются его дети.
+    """
+    return {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+
+def _qualified_name(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> str:
+    """Имя узла так, как его ищут в файле: `probe_p1_9b`, `Store.sweep`, `<module>`.
+
+    Модуль в префикс не попадает: у всех верхнеуровневых имён общий префикс
+    `<module>.` не различает ничего. Само дерево модуля называется `<module>`,
+    иначе у него не осталось бы имени вовсе.
+    """
+    parts: list[str] = []
+    current: ast.AST | None = node
+    while current is not None and not isinstance(current, ast.Module):
+        name = getattr(current, "name", None)
+        if name:
+            parts.append(name)
+        current = parents.get(current)
+    return ".".join(reversed(parts)) or "<module>"
+
+
+def docstring_locations() -> list[tuple[str, str, int]]:
+    """Все docstring'и модуля как `(имя узла, текст, строка литерала)`.
+
+    Читается тот же AST, что и в `module_docstring`, но не только вершина:
+    `ast.get_docstring` вызывается у модуля, каждого класса, каждой функции и
+    каждого метода. Порядок — обход `ast.walk` (в ширину), он детерминирован,
+    поэтому вывод судьи воспроизводим.
+    """
+    tree = ast.parse(PROBES_PATH.read_bytes().decode("utf-8"), filename=str(PROBES_PATH))
+    parents = _docstring_parents(tree)
+    found: list[tuple[str, str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, _DOCSTRING_NODES):
+            continue
+        doc = ast.get_docstring(node, clean=False)
+        if doc is None:
+            continue
+        # `node.body[0]` — тот самый строковый литерал, из которого взят
+        # docstring, поэтому его строка и есть начало отсчёта.
+        found.append((_qualified_name(node, parents), doc, node.body[0].lineno))
+    return found
 
 
 def _first_match(patterns: tuple[str, ...], text: str) -> str | None:
@@ -192,10 +269,32 @@ def check_run_confirms() -> str:
     return f"{where} -> exit=0"
 
 
+def check_no_base_reference_anywhere() -> str:
+    """Ни в одном docstring'е модуля нет ссылки на базу, которой больше нет."""
+    locations = docstring_locations()
+    assert locations, (
+        "в audit_probes.py не найдено ни одного docstring'а: проверять нечего, и "
+        "пустой обход не считается отсутствием оборота"
+    )
+
+    hits: list[str] = []
+    for name, doc, literal_line in locations:
+        for match in _BASE_REFERENCE.finditer(doc):
+            line = literal_line + doc[: match.start()].count("\n")
+            hits.append(f"{name}:{line}")
+
+    assert not hits, (
+        f"оборот «на базе» найден {len(hits)} раз(а), просмотрено docstring'ов: "
+        f"{len(locations)}: " + ", ".join(hits)
+    )
+    return f"«на базе» нет ни в одном из {len(locations)} docstring'ов модуля"
+
+
 CHECKS = (
     ("нет устаревшего обещания", check_no_stale_promise),
     ("инвариант сформулирован", check_invariant_stated),
     ("прогон подтверждает инвариант", check_run_confirms),
+    ("нет ссылки на базу ни в одном docstring", check_no_base_reference_anywhere),
 )
 
 
