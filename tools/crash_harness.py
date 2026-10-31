@@ -374,7 +374,11 @@ def cmd_run_journal(runs: int, slow: bool = False) -> int:
                     "integrity": "VERIFY_FAILED", "journal_integrity": "?",
                     "stderr": verify.stderr[-300:]}
 
-        if verify.returncode != 0:
+        # Прогон состоялся, только если ребёнок успел подтвердить хотя бы одну
+        # запись. Пустая база даёт разрыв 0 и выглядит зелёной, хотя проверять
+        # было нечего: прогон, умерший до первой записи, не должен проходить.
+        exercised = data.get("confirmed", 0) > 0 and data.get("kv_keys", 0) > 0
+        if verify.returncode != 0 or not exercised:
             bad += 1
 
         gaps.append(data.get("gap", 0))
@@ -386,6 +390,9 @@ def cmd_run_journal(runs: int, slow: bool = False) -> int:
                   n, data.get("confirmed", 0), data.get("kv_keys", 0), data.get("journal_events", 0),
                   data.get("gap", 0), data.get("phantom", 0),
                   data.get("integrity", "?"), data.get("journal_integrity", "?")))
+        if not exercised:
+            print("        ПРОГОН НЕ СОСТОЯЛСЯ: ребёнок не подтвердил ни одной "
+                  "записи, вердикт не выносится")
         if data.get("gap_sample"):
             print("        пример разрыва: %s" % ", ".join(data["gap_sample"]))
         if data.get("stderr"):
