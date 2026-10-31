@@ -39,6 +39,22 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     )
 
 
+def _in_git_work_tree(root: Path) -> bool:
+    """Whether `root` has an index to compare against.
+
+    Deliberately not `_git`: a probe that raises on failure cannot be used as a
+    skip condition, it aborts collection instead. Measured — `check=True` here
+    turns "not a repository" into `exit=2` and an ERROR during collection, which
+    reads like a broken test rather than an absent precondition.
+    """
+    probe = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=root,
+        capture_output=True,
+    )
+    return probe.returncode == 0
+
+
 def tracked_files(root: Path) -> list[str]:
     """Paths git tracks under `root`, repo-relative, posix-style.
 
@@ -89,7 +105,7 @@ def _report(offenders: list[tuple[str, int]]) -> str:
 
 
 pytestmark = pytest.mark.skipif(
-    _git(REPO_ROOT, "rev-parse", "--is-inside-work-tree").returncode != 0,
+    not _in_git_work_tree(REPO_ROOT),
     reason=(
         "not a git work tree: there is no index to disagree with, so the check "
         "has nothing to compare and must not report success on its own"
