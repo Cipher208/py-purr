@@ -70,7 +70,7 @@ jobs:
           /tmp/check/bin/python -m pip install dist/*.whl
           /tmp/check/bin/python -c "import purr; from purr import Store; print('import ok', purr.__version__)"
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -88,7 +88,7 @@ jobs:
       # The OIDC token that PyPI exchanges for a short-lived upload credential.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -100,4 +100,4 @@ jobs:
       # would be running code that holds this repository's PyPI credentials.
       #
       # Dependabot keeps SHA pins current and preserves the trailing comment.
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # release/v1
