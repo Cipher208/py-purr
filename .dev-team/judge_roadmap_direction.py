@@ -150,6 +150,9 @@ SERVER_MARKERS = (
     ("Planned / in the future / ETA", r"\bPlanned\b|\bin the future\b|\bETA\b"),
     ("Milestones v0.4/v0.5/v0.7/v1.0", r"\bv0\.[457]\.0\b|\bv1\.0\.0\b"),
     ("Full Redis compatibility", r"\bFull Redis compatibility\b"),
+    # Заголовок сетевого этапа и строка примера клиентского дерева: это тоже
+    # «этап» и «пример будущего API», а не просто соседи найденных строк.
+    ("этап Networking / Python client", r"\bNetworking\b|\bPython client\b"),
 )
 HEADING_WINDOW = 3  # пометка на заголовке или в первых строках раздела
 DEFERRED_HEADING_MIN_LEVEL = 2  # `#` -- имя документа, покрытием не считается
