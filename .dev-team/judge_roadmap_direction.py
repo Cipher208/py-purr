@@ -8,30 +8,26 @@
   1. дословное решение владельца с датой 2026-11-04;
   2. шапка Status/Vision не обещает «full Redis-like database engine» как
      ближайшую цель и фиксирует встроенную библиотеку без инфраструктуры;
-  3. семь серверных мест ПОИМЕННО помечены отложенными;
+  3. инвариант «ни одного серверного обещания без пометки отложено» по всему
+     документу: по смысловым маркерам собираются ВСЕ строки, где серверное
+     направление заявлено как план, приоритет, этап или пример будущего API,
+     и каждая обязана либо нести пометку сама, либо лежать в разделе,
+     помеченном отложенным. Непокрытые места печатаются ВСЕ поименно;
   4. непустой активный план под концепцию А, ссылающийся на 3.11/3.12/
      3.16/3.21/3.36/3.37, и не обещающий сервер следующим шагом;
   5. документ непустой и содержит Roadmap, Milestones, Open Questions.
 
-Семь мест проверки 3 -- сверено с FUTURE_PLAN.md на HEAD 198be7d:
-  1. `### Phase 3: Networking` (строка 193, раздел 2) -- заголовок фазы;
-  2. таблица приоритетов раздела 2: строки `**TCP Server**` (199, P1) и
-     `**Redis Protocol**` (202, P1) -- приоритеты TCP/RESP. В таблицах
-     Phase 4 (270-277) и Phase 5 (313-320) строк TCP/RESP НЕТ: там
-     Cluster/TLS/Auth/Docker/Client Library. Отдельной таблицы
-     «Phase 4/5 приоритеты TCP/RESP» в файле нет и она не выдумана: это место
-     -- реальная таблица `Phase 3: Networking`. Проверяется отдельно от
-     заголовка, потому что пометка на заголовке не покрывает строки P1;
-  3. `### 3.6 Replication (WAL Log Shipping)` (строка 505);
-  4. `### 3.7 Sharding (hash-based partitioning)` (строка 529);
-  5. `### 3.23 REST API Spec` (строка 926);
-  6. `## 7. Milestones` -- три строки v0.4.0 (1618), v0.7.0 (1621), v1.0.0 (1622);
-  7. `## 8. Open Questions` -- пункты 1 RESP (1628), 3 Cluster (1630), 4 Auth (1631).
+Проверка 3 не знает номеров строк: разделы определяются заголовками
+Markdown вне блоков кода, места -- содержимым строк. Пометка «отложено»
+ищется списком DEFERRED_FORMS на самой строке либо на заголовке раздела
+(в окне HEADING_WINDOW строк от заголовка) -- тогда она покрывает весь
+подраздел, включая примеры кода. Заголовок уровня `#` (имя документа)
+покрытием не считается: одна пометка в начале файла не должна закрывать
+весь документ. Если маркеры почти ничего не нашли, проверка падает как
+вакуумная: вырезать серверные разделы нельзя, их надо пометить.
 
-«Отложено», «встроенная библиотека» и «активный план» заданы списками
-принятых формулировок, а не одной случайной подстрокой: пустой текст не
-проходит ни одну из проверок. Вывод детерминирован: нет времени, сети,
-абсолютных путей машины и версии окружения.
+Вывод детерминирован: нет времени, сети, абсолютных путей машины и версии
+окружения.
 """
 
 from __future__ import annotations
@@ -110,36 +106,56 @@ DEFERRED_FORMS = (
     "сервер возможно потом",
 )
 
-SECTION_PLACES = (
-    ("Phase 3: Networking (раздел 2)", r"^###\s+Phase 3:\s*Networking\b"),
-    ("3.6 Replication (WAL Log Shipping)", r"^###\s+3\.6\s+Replication\b"),
-    ("3.7 Sharding", r"^###\s+3\.7\s+Sharding\b"),
-    ("3.23 REST API Spec", r"^###\s+3\.23\s+REST API Spec\b"),
-)
-HEADING_WINDOW = 4  # заголовок + 3 строки: вступление и ближайшая пометка
+# ---------------------------------------------------------------------------
+# Проверка 3. Смысловые маркеры серверного направления: план, приоритет,
+# этап, пример будущего API. Порядок не важен -- у строки собираются ВСЕ
+# сработавшие маркеры, и каждое непокрытое место печатается поименно.
+# Номера строк не используются вообще: только заголовки и содержимое.
+# ---------------------------------------------------------------------------
 
-PRIORITY_ROWS = (
-    ("таблица приоритетов раздела 2: TCP Server (P1)", r"^\s*\|\s*\*\*TCP Server\*\*"),
+SERVER_MARKERS = (
+    ("purr serve / --port", r"\bpurr serve\b|--port\s+\d+"),
     (
-        "таблица приоритетов раздела 2: Redis Protocol / RESP (P1)",
-        r"^\s*\|\s*\*\*Redis Protocol\*\*",
+        "TCP Server / TCP-сервер",
+        r"\bTCP server\b|\btcp\.py\b|\bPurrServer\b|\bstart_server\b|\bserve_forever\b",
     ),
+    (
+        "HTTP API / REST API",
+        r"\bHTTP API\b|\bREST API\b|\bhttp_api\.py\b|\bhttp\.py\b|\baiohttp\b",
+    ),
+    ("WebSocket", r"\bWebSocket\b|\bwebsocket\.py\b"),
+    (
+        "RESP / Redis Protocol",
+        r"\bRESP\b|\bRESP2\b|\bRedis Protocol\b|\bRedis-compatible protocol\b"
+        r"|\bRedis Serialization Protocol\b",
+    ),
+    ("дерево server/ / purr/server.py", r"server/|purr/server\.py"),
+    (
+        "server side / remote access / client library",
+        r"\bserver side\b|\bremote access\b|\bClient Library\b|client/"
+        r"|connection\.py\b|\bconnection pool\b",
+    ),
+    ("Cluster / Clustering / консенсус", r"\bCluster\b|\bClustering\b|\bRaft\b|\bPaxos\b"),
+    (
+        "Replication / replicas / master-slave",
+        r"\bReplication\b|\breplication\.py\b|\breplica\b|\breplicas\b|\bMaster-slave\b",
+    ),
+    ("Sharding", r"\bSharding\b|\bShardedStore\b|\bsharded_store\.py\b"),
+    ("RDB / AOF", r"\bRDB\b|\bAOF\b"),
+    (
+        "TLS / Auth / ACL",
+        r"\bTLS\b|\bAuth\b|\bAuthentication\b|\bACL\b|\bauth\.py\b|\bPassword\b",
+    ),
+    ("Docker", r"\bDocker\b"),
+    ("Planned / in the future / ETA", r"\bPlanned\b|\bin the future\b|\bETA\b"),
+    ("Milestones v0.4/v0.5/v0.7/v1.0", r"\bv0\.[457]\.0\b|\bv1\.0\.0\b"),
+    ("Full Redis compatibility", r"\bFull Redis compatibility\b"),
 )
-MILESTONE_VERSIONS = ("v0.4.0", "v0.7.0", "v1.0.0")
-OPEN_ITEMS = (
-    ("Open Questions: пункт 1 (RESP)", r"\bRESP\b"),
-    ("Open Questions: пункт 3 (Cluster)", r"\bCluster\b|\bRaft\b|\bPaxos\b"),
-    ("Open Questions: пункт 4 (Auth)", r"\bAuth\b|\bACL\b"),
-)
-SEVEN_PLACES = (
-    "Phase 3: Networking",
-    "таблица приоритетов TCP/RESP раздела 2",
-    "3.6 Replication (WAL Log Shipping)",
-    "3.7 Sharding",
-    "3.23 REST API Spec",
-    "Milestones (v0.4.0/v0.7.0/v1.0.0)",
-    "Open Questions (пункты 1/3/4)",
-)
+HEADING_WINDOW = 3  # пометка на заголовке или в первых строках раздела
+DEFERRED_HEADING_MIN_LEVEL = 2  # `#` -- имя документа, покрытием не считается
+MIN_SERVER_PLACES = 12  # защита от вакуума: вырезать разделы нельзя
+MIN_SERVER_MARKERS = 6
+MAX_SNIPPET = 76
 
 ACTIVE_HEADINGS = (
     r"^##\s+(?:\d+\.\s*)?.*(?:активный план|active plan|план концепции а|план под концепцию а)",
@@ -264,6 +280,82 @@ def content_lines(body: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Проверка 3: разметка документа по заголовкам и сбор серверных мест
+# ---------------------------------------------------------------------------
+
+
+def heading_level(line: str) -> tuple[int, str] | None:
+    m = re.match(r"^(#{1,6})\s+(.*\S)\s*$", line)
+    if m is None:
+        return None
+    return len(m.group(1)), m.group(2).strip()
+
+
+def heading_stacks(lines: list[str]) -> list[tuple[tuple[int, int, str], ...]]:
+    """Для каждой строки -- стек активных заголовков (уровень, индекс, имя).
+
+    Содержимое fenced-блоков кода заголовками не считается: `# purr/server.py`
+    и `# Server` внутри примеров не должны ломать границы разделов.
+    """
+    stack: list[tuple[int, int, str]] = []
+    out: list[tuple[tuple[int, int, str], ...]] = []
+    in_fence = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            out.append(tuple(stack))
+            continue
+        if not in_fence:
+            heading = heading_level(line)
+            if heading is not None:
+                level, title = heading
+                while stack and stack[-1][0] >= level:
+                    stack.pop()
+                stack.append((level, i, title))
+        out.append(tuple(stack))
+    return out
+
+
+def deferred_headings(
+    lines: list[str], stacks: list[tuple[tuple[int, int, str], ...]]
+) -> set[int]:
+    """Индексы заголовков разделов, помеченных отложенными.
+
+    Пометка ищется в окне HEADING_WINDOW строк от заголовка: она может быть
+    прямо в заголовке или в ближайшем вступлении раздела.
+    """
+    marked: set[int] = set()
+    for i, stack in enumerate(stacks):
+        if not stack or stack[-1][1] != i:
+            continue
+        if stack[-1][0] < DEFERRED_HEADING_MIN_LEVEL:
+            continue
+        window = "\n".join(lines[i : i + HEADING_WINDOW])
+        if any_of(window, DEFERRED_FORMS) is not None:
+            marked.add(i)
+    return marked
+
+
+def section_label(stack: tuple[tuple[int, int, str], ...]) -> str:
+    if not stack:
+        return "шапка документа"
+    title = re.sub(r"\((?:отложено|deferred|postponed)[^)]*\)", "", stack[-1][2], flags=re.I)
+    title = title.strip()
+    return title[:70] or "раздел без имени"
+
+
+def collect_server_lines(lines: list[str]) -> list[tuple[int, str, list[str]]]:
+    """(индекс строки, фрагмент, все сработавшие маркеры)."""
+    found: list[tuple[int, str, list[str]]] = []
+    for i, line in enumerate(lines):
+        hits = [name for name, pattern in SERVER_MARKERS if re.search(pattern, line, re.I)]
+        if hits:
+            found.append((i, line.strip()[:MAX_SNIPPET], hits))
+    return found
+
+
+# ---------------------------------------------------------------------------
 # Пять проверок
 # ---------------------------------------------------------------------------
 
@@ -313,58 +405,49 @@ def check_header(lines: list[str]) -> tuple[bool, str]:
 
 
 def check_deferred(lines: list[str]) -> tuple[bool, str]:
-    missing: list[str] = []
+    what = "ни одного серверного обещания без пометки «отложено»"
+    stacks = heading_stacks(lines)
+    marked = deferred_headings(lines, stacks)
+    found = collect_server_lines(lines)
+    markers_seen = {name for _, _, hits in found for name in hits}
 
-    for name, pattern in SECTION_PLACES:
-        spot = find_line(lines, pattern)
-        if spot is None:
-            missing.append(f"{name} -- заголовок не найден")
-            continue
-        i, _ = spot
-        window = "\n".join(lines[i : i + HEADING_WINDOW])
-        if any_of(window, DEFERRED_FORMS) is None:
-            missing.append(f"{name} -- нет пометки в окне строк {i + 1}-{i + HEADING_WINDOW}")
-
-    for name, pattern in PRIORITY_ROWS:
-        rows = [(i, ln) for i, ln in enumerate(lines) if re.search(pattern, ln, re.I)]
-        if not rows:
-            missing.append(f"{name} -- строка приоритета не найдена")
-        elif not any(any_of(ln, DEFERRED_FORMS) for _, ln in rows):
-            missing.append(f"{name} -- строка {rows[0][0] + 1} без пометки отложено")
-
-    milestones = section_slice(lines, r"\bMilestones\b")
-    if milestones is None:
-        missing.append("Milestones -- раздел не найден")
-    else:
-        _, body = milestones
-        for version in MILESTONE_VERSIONS:
-            rows = [ln for ln in body if version in ln and ln.lstrip().startswith("|")]
-            if not rows:
-                missing.append(f"Milestones: строка {version} не найдена")
-            elif not any(any_of(ln, DEFERRED_FORMS) for ln in rows):
-                missing.append(f"Milestones: строка {version} без пометки отложено")
-
-    questions = section_slice(lines, r"\bOpen\s+Questions\b")
-    if questions is None:
-        missing.append("Open Questions -- раздел не найден")
-    else:
-        _, body = questions
-        numbered = [ln for ln in body if re.match(r"^\s*\d+\.\s", ln)]
-        if len(numbered) < 3:
-            missing.append(f"Open Questions: пронумерованных пунктов {len(numbered)} < 3")
-        for name, pattern in OPEN_ITEMS:
-            rows = [ln for ln in numbered if re.search(pattern, ln, re.I)]
-            if not rows:
-                missing.append(f"{name} -- пункт не найден")
-            elif not any(any_of(ln, DEFERRED_FORMS) for ln in rows):
-                missing.append(f"{name} -- без пометки отложено")
-
-    if missing:
+    # Нулевой случай: документ, из которого вырезали все серверные разделы,
+    # не должен проходить как «нет запрещённых фраз» -- пометить надо, а не стереть.
+    if len(found) < MIN_SERVER_PLACES or len(markers_seen) < MIN_SERVER_MARKERS:
         return False, (
-            "assert «все семь серверных мест поименно помечены отложенными» -- нарушено: "
-            + "; ".join(missing)
+            f"assert «{what}» -- нарушено: проверка вакуумна -- "
+            f"найдено {len(found)} строк с серверными маркерами и "
+            f"{len(markers_seen)} смысловых маркеров из {len(SERVER_MARKERS)}; "
+            "документ обрезан или серверные разделы вырезаны вместо пометки"
         )
-    return True, "все 7 мест помечены: " + ", ".join(SEVEN_PLACES)
+
+    # Одно место -- одна строка: у неё могут сработать несколько маркеров,
+    # но печатается она один раз, со своим номером и своим дословным текстом.
+    uncovered: list[tuple[int, str, str, tuple[str, ...]]] = []
+    for i, snippet, hits in found:
+        if any_of(lines[i], DEFERRED_FORMS) is not None:
+            continue  # пометка на самой строке
+        if any(idx in marked for _, idx, _ in stacks[i]):
+            continue  # пометка на заголовке раздела покрывает подраздел целиком
+        uncovered.append((i + 1, section_label(stacks[i]), snippet, tuple(hits)))
+
+    if uncovered:
+        detail = [
+            f"assert «{what}» -- нарушено: непокрытых мест {len(uncovered)} "
+            f"из {len(found)} найденных строк с серверными маркерами, все поименно:"
+        ]
+        for number, (lineno, label, snippet, hits) in enumerate(uncovered, 1):
+            detail.append(
+                f"    - [{number}] «{label}» строка {lineno} "
+                f"[{'; '.join(hits)}] -> {snippet!r}"
+            )
+        return False, "\n".join(detail)
+
+    labels = {section_label(stacks[i]) for i, _, _ in found}
+    return True, (
+        f"найдено {len(found)} строк с серверными маркерами в {len(labels)} разделах; "
+        f"все покрыты пометкой: сами строки или {len(marked)} помеченных разделов"
+    )
 
 
 def check_active_plan(lines: list[str]) -> tuple[bool, str]:
@@ -450,7 +533,7 @@ def main() -> int:
     results = (
         ("решение владельца", check_decision(lines)),
         ("шапка Status/Vision", check_header(lines)),
-        ("семь серверных мест отложены", check_deferred(lines)),
+        ("серверные обещания отложены по всему документу", check_deferred(lines)),
         ("активный план концепции А", check_active_plan(lines)),
         ("документ непустой и полный", check_document(lines, text)),
     )
