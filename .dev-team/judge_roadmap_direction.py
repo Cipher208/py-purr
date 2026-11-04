@@ -158,7 +158,7 @@ HEADING_WINDOW = 3  # пометка на заголовке или в перв�
 DEFERRED_HEADING_MIN_LEVEL = 2  # `#` -- имя документа, покрытием не считается
 MIN_SERVER_PLACES = 12  # защита от вакуума: вырезать разделы нельзя
 MIN_SERVER_MARKERS = 6
-MAX_SNIPPET = 76
+MAX_SNIPPET = 120
 
 ACTIVE_HEADINGS = (
     r"^##\s+(?:\d+\.\s*)?.*(?:активный план|active plan|план концепции а|план под концепцию а)",
