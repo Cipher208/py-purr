@@ -29,7 +29,7 @@ from .middleware import (
 )
 from .retry import RetryConfig, RetryHandler
 from .saga import Saga, SagaStatus
-from .state_machine import State, StateMachine, Transition
+from .state_machine import CallbackError, State, StateMachine, Transition
 from .store import Store
 from .versioning import EventVersioner, MigrationGapError
 
@@ -41,6 +41,7 @@ __all__ = [
     "StateMachine",
     "State",
     "Transition",
+    "CallbackError",
     "Saga",
     "SagaStatus",
     "EventBus",

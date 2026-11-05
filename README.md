@@ -121,6 +121,46 @@ sm.snapshot()
 sm.restore_snapshot()
 ```
 
+#### Callback failures after a committed transition
+
+Callbacks run after the state and its `transition` journal event are committed.
+If a callback raises, `send()` raises `CallbackError`, not the callback's own
+exception. Read `committed` before reacting: the transition is already stored,
+so sending the event again is wrong. `callback` names the failed hook and the
+original exception is kept in `__cause__`.
+
+```python
+from purr import CallbackError, StateMachine
+
+sm = StateMachine("order_pipeline", db_path=":memory:")
+sm.add_transition("idle", "processing", "start_job")
+sm.set_state("idle")
+
+
+def on_exit(state):
+    raise ValueError("callback boom")
+
+
+sm.on_exit("idle", on_exit)
+
+try:
+    sm.send("start_job")
+except CallbackError as exc:
+    print("callback:", exc.callback)
+    print("committed:", exc.committed)
+    print("state:", sm.current_state)
+    print("cause:", type(exc.__cause__).__name__)
+    # exc.committed is True: the transition is stored. Handle the callback
+    # failure here; do NOT send("start_job") again.
+    assert exc.committed is True
+
+sm.close()
+# callback: on_exit
+# committed: True
+# state: processing
+# cause: ValueError
+```
+
 ---
 
 ### 3. Sagas (Compensating Transactions)

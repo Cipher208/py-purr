@@ -85,3 +85,24 @@ def test_dedup_middleware_options():
     params = inspect.signature(DedupMiddleware.__init__).parameters
     assert "ttl_seconds" in params
     assert "window_seconds" not in params
+
+
+def test_callback_error_readme_tour():
+    """The README example catches CallbackError and reads `committed`."""
+    import io
+    import re
+    from contextlib import redirect_stdout
+    from pathlib import Path
+
+    readme = Path(__file__).resolve().parents[1] / "README.md"
+    text = readme.read_text(encoding="utf-8")
+    blocks = re.findall(r"```python\n(.*?)```", text, re.DOTALL)
+    examples = [block for block in blocks if "except CallbackError" in block]
+    assert len(examples) == 1
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        exec(compile(examples[0], str(readme), "exec"), {})
+    assert "callback: on_exit" in out.getvalue()
+    assert "committed: True" in out.getvalue()
+    assert "state: processing" in out.getvalue()

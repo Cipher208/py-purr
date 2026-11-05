@@ -40,6 +40,20 @@ class Transition(BaseModel):
     action: Callable[[State, dict[str, Any]], dict[str, Any]] | None = None
 
 
+class CallbackError(Exception):
+    """A callback failed after the transition was already committed.
+
+    ``committed`` is True: the state and its journal event are stored, so the
+    caller must handle the callback failure and must not send the event again.
+    The original exception is available as ``__cause__``.
+    """
+
+    def __init__(self, callback: str, exc: Exception) -> None:
+        self.committed = True
+        self.callback = callback
+        super().__init__(f"{callback} failed after a committed transition: {exc!r}")
+
+
 class StateMachine(SQLiteBackend):
     """Finite state machine with SQLite WAL persistence.
 
@@ -190,10 +204,16 @@ class StateMachine(SQLiteBackend):
                 self._current = new_state
 
                 if old_state.name in self._on_exit:
-                    self._on_exit[old_state.name](old_state)
+                    try:
+                        self._on_exit[old_state.name](old_state)
+                    except Exception as exc:
+                        raise CallbackError("on_exit", exc) from exc
 
                 if new_state.name in self._on_enter:
-                    self._on_enter[new_state.name](new_state)
+                    try:
+                        self._on_enter[new_state.name](new_state)
+                    except Exception as exc:
+                        raise CallbackError("on_enter", exc) from exc
 
                 return True
         return False
