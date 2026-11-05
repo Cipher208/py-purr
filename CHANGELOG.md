@@ -125,6 +125,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ValueError`: use `reset_cursor(name)` to clear a cursor on purpose.
 
 ### Fixed
+- `StateMachine.send()` and `set_state()` now publish a new state only after
+  the commit succeeds. When the write fails, the error is still raised, but
+  `current_state` and `state_data` keep their previous values and match the
+  stored row; previously the object reported the new state and data while
+  the database had rolled back. For a transition that is not committed,
+  neither `on_exit` nor `on_enter` runs, and the machine stays usable:
+  sending the same event again returns `True` and reaches the target state
+  instead of returning `False`. The state row and its journal event are
+  still written in one transaction: both commit together on success and both
+  roll back on failure.
+  **Callback contract changed:** `on_exit` now runs after a successful commit
+  rather than before the write. The `on_exit` → `on_enter` order is
+  unchanged, but an exception raised inside `on_exit` now arrives after the
+  transition is already committed, not before anything was written.
 - `run-journal` refuses a run that never got far enough to be measured.
   An empty database reported `gap 0` and exited `0`, so a writer that died
   before its first confirmed key looked exactly like a clean run. It now
