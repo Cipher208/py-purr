@@ -24,6 +24,9 @@
 ## 1. Current State (v0.1.0)
 
 ### Working
+
+> Исторический снимок на 2026-07-24; актуальные данные — в `README.md`.
+
 - **Store** — thread-safe KV with SQLite WAL, TTL, atomic writes
 - **StateMachine** — FSM with persistence, snapshots, guards, actions
 - **Saga** — compensating transactions
@@ -36,6 +39,10 @@
 - **Tests** — 44/44 passed
 
 ### Stats
+
+> **Исторический снимок на 2026-07-24.** Числа ниже актуальны на ту дату
+> и не описывают текущее состояние; актуальные данные — в `README.md`.
+
 - LOC: ~1500
 - Files: 15
 - Modules: 10

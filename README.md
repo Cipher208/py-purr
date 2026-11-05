@@ -127,7 +127,8 @@ Callbacks run after the state and its `transition` journal event are committed.
 If a callback raises, `send()` raises `CallbackError`, not the callback's own
 exception. Read `committed` before reacting: the transition is already stored,
 so sending the event again is wrong. `callback` names the failed hook and the
-original exception is kept in `__cause__`.
+original exception is kept in `__cause__`. A repeated `send()` of the same
+event returns `False` — the transition is already committed.
 
 ```python
 from purr import CallbackError, StateMachine
@@ -330,7 +331,7 @@ uv sync --extra dev
 uv run pytest -v
 ```
 
-The suite is 202 tests and runs in a few seconds. CI additionally enforces
+The suite is 226 tests and runs in a few seconds. CI additionally enforces
 `ruff check`, `ruff format --check`, and a coverage gate of 85% on Python
 3.11, 3.12 and 3.13.
 
