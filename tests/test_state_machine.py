@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+import purr
 from purr import EventStream, StateMachine
 
 
@@ -295,3 +296,132 @@ class TestStateMachineRollback:
             rig.sm.send("go", {"marker": "new"})
         rig.restore_journal()
         assert (rig.sm.send("go", {"marker": "new"}), rig.sm.current_state) == (True, "B")
+
+
+class TestStateMachineCallbackContract:
+    """A callback failure after a committed transition must be a truthful signal.
+
+    The type of the raised exception is the subject under test, so the harness
+    catches Exception instead of naming CallbackError: on the base tree the
+    assertion must fail on values, not on a missing import.
+    """
+
+    @staticmethod
+    def _arm(rig, failing: str):
+        """Replace the rig's callbacks so exactly one of them raises."""
+        boom = ValueError(f"{failing} boom")
+
+        def on_exit(state):
+            rig.calls.append(("exit", state.name))
+            if failing == "on_exit":
+                raise boom
+
+        def on_enter(state):
+            rig.calls.append(("enter", state.name))
+            if failing == "on_enter":
+                raise boom
+
+        rig.sm.on_exit("A", on_exit)
+        rig.sm.on_enter("B", on_enter)
+        return boom
+
+    @staticmethod
+    def _caught(rig):
+        """Return whatever send() raised, or None if it returned normally."""
+        try:
+            rig.sm.send("go", {"marker": "new"})
+        except Exception as exc:
+            return exc
+        return None
+
+    def test_callback_error_is_public_api(self):
+        assert (
+            "CallbackError" in purr.__all__,
+            getattr(purr, "CallbackError", None) is not None,
+        ) == (True, True)
+
+    def test_exit_failure_raises_committed_callback_error_not_value_error(self, rig):
+        boom = self._arm(rig, "on_exit")
+        error = self._caught(rig)
+        cause = getattr(error, "__cause__", None)
+        assert (
+            type(error).__name__,
+            getattr(error, "committed", None) is True,
+            getattr(error, "callback", None),
+            type(cause).__name__,
+            str(cause),
+            cause is boom,
+        ) == ("CallbackError", True, "on_exit", "ValueError", "on_exit boom", True)
+
+    def test_exit_failure_commits_before_signal_without_calling_enter(self, rig):
+        self._arm(rig, "on_exit")
+        self._caught(rig)
+        assert (
+            rig.calls,
+            (rig.sm.current_state, rig.sm.state_data),
+            _read_state(rig.db),
+            _read_events(rig.db),
+        ) == (
+            [("exit", "A")],
+            ("B", {"marker": "new"}),
+            ("B", {"marker": "new"}),
+            [("set", None, "A"), ("transition", "A", "B")],
+        )
+
+    def test_enter_failure_raises_committed_signal_and_finishes_both_callbacks(self, rig):
+        boom = self._arm(rig, "on_enter")
+        error = self._caught(rig)
+        cause = getattr(error, "__cause__", None)
+        assert (
+            type(error).__name__,
+            getattr(error, "committed", None) is True,
+            getattr(error, "callback", None),
+            type(cause).__name__,
+            cause is boom,
+            rig.calls,
+            (rig.sm.current_state, rig.sm.state_data),
+            _read_state(rig.db),
+            _read_events(rig.db),
+        ) == (
+            "CallbackError",
+            True,
+            "on_enter",
+            "ValueError",
+            True,
+            [("exit", "A"), ("enter", "B")],
+            ("B", {"marker": "new"}),
+            ("B", {"marker": "new"}),
+            [("set", None, "A"), ("transition", "A", "B")],
+        )
+
+    def test_write_error_is_not_wrapped_and_rolls_back_to_a(self, rig):
+        rig.break_journal()
+        error = self._caught(rig)
+        assert (
+            type(error).__name__,
+            str(error),
+            rig.calls,
+            _read_state(rig.db),
+            _read_events(rig.db),
+        ) == (
+            "RuntimeError",
+            "forced journal failure",
+            [],
+            ("A", {"marker": "old"}),
+            [("set", None, "A")],
+        )
+
+    def test_happy_path_returns_true_and_set_state_gives_no_signal(self, rig):
+        result = rig.sm.send("go", {"marker": "new"})
+        rig.sm.set_state("A", {"marker": "old"})
+        assert (
+            result,
+            rig.calls,
+            _read_events(rig.db),
+            _read_state(rig.db),
+        ) == (
+            True,
+            [("exit", "A"), ("enter", "B")],
+            [("set", None, "A"), ("transition", "A", "B"), ("set", None, "A")],
+            ("A", {"marker": "old"}),
+        )
