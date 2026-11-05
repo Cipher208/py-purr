@@ -174,22 +174,23 @@ class StateMachine(SQLiteBackend):
                 if transition.action:
                     data = transition.action(self._current, data)
 
-                if old_state.name in self._on_exit:
-                    self._on_exit[old_state.name](old_state)
-
                 new_state = State(
                     name=transition.target,
                     data={**old_state.data, **data},
                 )
-                self._current = new_state
                 self._commit_state(
                     {
                         "op": "transition",
                         "event": event,
                         "from": old_state.name,
                         "to": new_state.name,
-                    }
+                    },
+                    new_state,
                 )
+                self._current = new_state
+
+                if old_state.name in self._on_exit:
+                    self._on_exit[old_state.name](old_state)
 
                 if new_state.name in self._on_enter:
                     self._on_enter[new_state.name](new_state)
@@ -199,8 +200,9 @@ class StateMachine(SQLiteBackend):
 
     def set_state(self, name: str, data: dict[str, Any] | None = None) -> None:
         """Force set state (bypasses transitions)."""
-        self._current = State(name=name, data=data or {})
-        self._commit_state({"op": "set", "from": None, "to": name})
+        new_state = State(name=name, data=data or {})
+        self._commit_state({"op": "set", "from": None, "to": name}, new_state)
+        self._current = new_state
 
     def snapshot(self) -> None:
         """Save current state as a snapshot."""
@@ -300,9 +302,10 @@ class StateMachine(SQLiteBackend):
                 entered_at=datetime.fromisoformat(row["updated_at"]),
             )
 
-    def _save_state(self) -> None:
+    def _save_state(self, state: State | None = None) -> None:
         """Write the current state row. No commit: the caller owns the transaction."""
-        if not self._current:
+        state = state if state is not None else self._current
+        if not state:
             return
 
         conn = self._get_conn()
@@ -313,13 +316,13 @@ class StateMachine(SQLiteBackend):
             """,
             (
                 self.name,
-                self._current.name,
-                json.dumps(self._current.data),
+                state.name,
+                json.dumps(state.data),
                 datetime.now(UTC).isoformat(),
             ),
         )
 
-    def _commit_state(self, payload: dict[str, Any]) -> None:
+    def _commit_state(self, payload: dict[str, Any], state: State) -> None:
         """Save the state and its journal event in one transaction.
 
         The event is inserted before the commit, so a failing event rolls the
@@ -327,7 +330,7 @@ class StateMachine(SQLiteBackend):
         """
         conn = self._get_conn()
         try:
-            self._save_state()
+            self._save_state(state)
             self._journal_emit(payload)
             conn.commit()
         except Exception:
