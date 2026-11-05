@@ -1,8 +1,23 @@
 # PURR — Future Plan
 
-> **Status:** Draft
-> **Date:** 2026-07-24
-> **Vision:** A full Redis-like database engine on SQLite
+> **Status:** Active — встроенная библиотека без сервера
+> **Date:** 2026-11-04
+> **Vision:** Встроенная библиотека без инфраструктуры: KV, FSM, саги и журнал событий в одном файле SQLite, без сервера и без сетевого доступа.
+> **Решение владельца (2026-11-04):** «Берем за основу концепцию А, сервер возможно потом».
+>
+> Обоснование: `README.md` и реализованный контракт журнала (`ADR-001-journal-contract.md`) описывают один файл данных и одну транзакцию, а не сетевой доступ. Всё серверное направление вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04) и в активный план не входит.
+
+## 0. Активный план (концепция А)
+
+Делаем сейчас ядро встроенной библиотеки. Текущий фокус и ближайшие шаги:
+
+1. **Надёжность состояния:** исправить рассогласование FSM в памяти и БД при откате записи; спроектировать персистенцию саги (сейчас состояние только в памяти).
+2. **Контракт журнала:** replay обязан обрабатывать все операции, включая `flush`, и сохранять метаданные TTL; см. разделы 3.36 и 3.37.
+3. **Встроенные сценарии:** 3.11 Embedded Use Case, 3.12 Dual Mode, 3.16 Positioning и 3.17 Competitive Analysis остаются описанием продукта.
+4. **Саги и транзакции:** 3.21 Saga with SQL Savepoints и 3.36 Deterministic Replay — основа отказоустойчивости одного файла.
+5. **Доказательная база:** 3.37 Testing Strategy, краш-стенд и пробы в `.dev-team/`; счётчики тестов и E501 в `tools/` ведутся отдельными задачами.
+
+Сервер следующим шагом не является: см. `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04).
 
 ---
 
@@ -190,91 +205,16 @@ class Transaction:
 
 ---
 
-### Phase 3: Networking
-
-Add the server side for remote access.
-
-| Feature | Description | Priority |
-|---|---|---|
-| **TCP Server** | Redis-compatible protocol | P1 |
-| **HTTP API** | REST API for CRUD | P1 |
-| **WebSocket** | Pub/Sub over WebSocket | P2 |
-| **Redis Protocol** | RESP (Redis Serialization Protocol) | P1 |
-
-#### TCP Server
-```python
-# purr/server.py
-class PurrServer:
-    def __init__(self, store: Store, host: str = "0.0.0.0", port: int = 6380):
-        self._store = store
-        self._host = host
-        self._port = port
-    
-    async def start(self) -> None:
-        """Start TCP server."""
-        server = await asyncio.start_server(
-            self._handle_client, self._host, self._port
-        )
-        async with server:
-            await server.serve_forever()
-    
-    async def _handle_client(self, reader, writer) -> None:
-        """Handle client connection (RESP protocol)."""
-        # Parse RESP, execute commands, return results
-        pass
-```
-
-#### HTTP API
-```python
-# purr/http_api.py
-from aiohttp import web
-
-class PurrHTTP:
-    def __init__(self, store: Store):
-        self._store = store
-        self._app = web.Application()
-        self._setup_routes()
-    
-    def _setup_routes(self) -> None:
-        self._app.router.add_get("/kv/{key}", self._get)
-        self._app.router.add_put("/kv/{key}", self._put)
-        self._app.router.add_delete("/kv/{key}", self._delete)
-        self._app.router.add_get("/health", self._health)
-    
-    async def _get(self, request) -> web.Response:
-        key = request.match_info["key"]
-        value = self._store.get(key)
-        if value is None:
-            return web.json_response({"error": "not found"}, status=404)
-        return web.json_response({"key": key, "value": value})
-    
-    async def _put(self, request) -> web.Response:
-        key = request.match_info["key"]
-        data = await request.json()
-        self._store.set(key, data["value"], ttl=data.get("ttl"))
-        return web.json_response({"ok": True})
-    
-    async def _delete(self, request) -> web.Response:
-        key = request.match_info["key"]
-        self._store.delete(key)
-        return web.json_response({"ok": True})
-    
-    async def _health(self, request) -> web.Response:
-        return web.json_response({"status": "ok", "size": self._store.size()})
-```
-
----
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): раздел 2, фаза 3.
 
 ### Phase 4: Advanced Features
 
 | Feature | Description | Priority |
 |---|---|---|
 | **Pub/Sub** | Real-time pub/sub over streams | P1 |
-| **Cluster** | Multi-node replication | P2 |
-| **Persistence** | RDB snapshots + AOF | P1 |
 | **Eviction** | LRU/LFU eviction policies | P2 |
-| **TLS** | Encrypted connections | P2 |
-| **Auth** | Password/AUTH command | P1 |
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): строки таблицы раздела 2.
+
 
 #### Pub/Sub Implementation
 ```python
@@ -313,8 +253,8 @@ class PubSub:
 | Feature | Description | Priority |
 |---|---|---|
 | **CLI** | Command-line interface | P0 |
-| **Client Library** | Python client for remote access | P1 |
-| **Docker** | Docker image | P1 |
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): строки таблицы раздела 2.
+
 | **Benchmarking** | Performance tests | P2 |
 | **Metrics** | Reads/sec, TTL hits, DB size tracking | P1 |
 | **Documentation** | Complete API documentation | P0 |
@@ -343,12 +283,8 @@ $ purr lrange mylist 0 -1
 2) "b"
 3) "a"
 
-$ purr info
-# Server
-redis_version:0.1.0-purr
-uptime_in_seconds:12345
-# Keyspace
-db0:keys=42,expires=10,avg_ttl=3600
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): пример CLI из раздела 2.
+
 ```
 
 ---
@@ -502,55 +438,7 @@ class HybridPubSub:
         return len(self._local_subscribers.get(channel, []))
 ```
 
-### 3.6 Replication (WAL Log Shipping)
-
-The master ships WAL logs; the replicas apply the diffs.
-
-```python
-# purr/replication.py
-class ReplicationManager:
-    def __init__(self, store: Store):
-        self._store = store
-        self._replicas: list[ReplicaConnection] = []
-    
-    async def add_replica(self, host: str, port: int) -> None:
-        """Add a replica to replicate to."""
-    
-    async def sync(self) -> None:
-        """Send WAL changes to replicas."""
-        # 1. Read WAL checkpoint
-        # 2. Send diff to each replica
-        # 3. Wait for acknowledgment
-    
-    async def catchup(self, replica: ReplicaConnection) -> None:
-        """Full sync for new replica."""
-```
-
-### 3.7 Sharding (hash-based partitioning)
-
-Each partition in its own SQLite file.
-
-```python
-# purr/sharded_store.py
-class ShardedStore:
-    def __init__(self, base_path: str | Path, num_shards: int = 4):
-        self._shards = [
-            Store(base_path / f"shard_{i}.db")
-            for i in range(num_shards)
-        ]
-        self._num_shards = num_shards
-    
-    def _get_shard(self, key: str) -> Store:
-        """Get shard for key using consistent hashing."""
-        shard_id = hash(key) % self._num_shards
-        return self._shards[shard_id]
-    
-    def set(self, key: str, value: Any, **kwargs) -> bool:
-        return self._get_shard(key).set(key, value, **kwargs)
-    
-    def get(self, key: str) -> Any | None:
-        return self._get_shard(key).get(key)
-```
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): разделы 3.6 и 3.7.
 
 ### 3.8 In-Memory LRU Cache
 
@@ -748,8 +636,8 @@ class PurrClient:
 ### 3.14 CLI Tools
 
 ```
-purr serve --port 6379          # Redis-compatible protocol (RESP)
-purr serve --http --port 8080   # HTTP API
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): строки раздела 3.14.
+
 purr inspect data/purr.db       # Show the contents
 purr stats data/purr.db         # Stats: reads/writes, WAL size
 purr dump data/purr.db          # Dump to JSON
@@ -816,7 +704,8 @@ class AutoVacuum:
 - **WAL is mandatory**: `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`
 - **A sync API is a feature**: for small operations, async is overhead
 - **VACUUM is automatic**: above a threshold (50% dead data)
-- **RESP is not required in v1**: start with HTTP + the Python SDK
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): строка раздела 3.18.
+
 
 ### 3.19 Launch Strategy
 
@@ -923,54 +812,7 @@ Six built-in middleware (we have five; adding Validate and Metrics):
 | **Validate** | **Schema validation** | **Validate(json_schema)** |
 | **Metrics** | **Metrics collection** | **Metrics(prometheus_registry)** |
 
-### 3.23 REST API Spec
-
-```
-GET    /kv/:key              — GET
-POST   /kv/:key              — SET (body: value, ttl?)
-DELETE /kv/:key              — DEL
-POST   /kv/batch             — MSET
-GET    /kv/batch?keys=...    — MGET
-
-POST   /pubsub/publish       — Publish { channel, payload }
-POST   /pubsub/subscribe     — Subscribe { channel, callback_url }
-DELETE /pubsub/subscribe/:id — Unsubscribe
-
-POST   /stream/:name/add     — XADD
-GET    /stream/:name/read    — XREAD (since_id, count)
-POST   /stream/:name/group   — Create consumer group
-
-POST   /saga/begin           — Begin saga
-POST   /saga/:id/step        — Add step
-POST   /saga/:id/execute     — Execute
-POST   /saga/:id/compensate  — Compensate
-GET    /saga/:id             — Status
-
-GET    /health               — Health check
-GET    /stats                — Stats
-```
-
-### 3.24 MCP Integration
-
-Tools for integration with AI agents:
-
-```python
-# MCP tools
-purr_set(key, value, ttl=None)       # SET
-purr_get(key)                        # GET
-purr_del(key)                        # DEL
-purr_keys(pattern)                   # LIKE search
-
-purr_publish(channel, payload)       # PUBLISH
-purr_subscribe(channel)              # SUBSCRIBE
-
-purr_stream_add(stream, data)        # XADD
-purr_stream_read(stream, from_id)    # XREAD
-
-purr_saga_begin()                    # BEGIN SAGA
-purr_saga_step(saga_id, type, data)  # ADD STEP
-purr_saga_execute(saga_id)           # EXECUTE
-```
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): разделы 3.23 и 3.24.
 
 ### 3.25 TTL Daemon
 
@@ -1010,7 +852,8 @@ An honest assessment of the limits:
 
 | Limitation | Description | Mitigation |
 |---|---|---|
-| **Not for distributed systems** | PURR lives on one machine | Clustering in the future |
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): строка раздела 3.26.
+
 | **WAL grows** | Needs periodic checkpointing | Auto-VACUUM |
 | **Not in-memory** | Redis is faster for high-frequency caches | LRU cache layer |
 | **SQLite single writer** | Concurrent writes are the bottleneck | Write queue |
@@ -1436,8 +1279,8 @@ Additions after reconciling four design documents.
 #### From the architecture review:
 - **MSET/MGET** — atomic multi-key write/read (Phase 1)
 - **EXISTS** — check whether a key exists (Phase 1)
-- **PubSub subscriber_type + callback_url** — webhook delivery (Phase 3)
-- **Persistent pubsub_messages table** — three tables for PubSub (Phase 3)
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): строки раздела 3.38.
+
 
 #### From the engine specification:
 - **Core API methods** — SubscribeRaw, AddEvent, Close (Phase 1)
@@ -1451,8 +1294,8 @@ Additions after reconciling four design documents.
   - `purr_persist_duration_seconds`
 - **Exporters** — OpenTelemetry, Log-based (Phase 5)
 - **Use cases** — Game Dev, Edge/Serverless, DevTools, Education (Use Cases)
-- **EmitTrigger types** — EmitOnClose, EmitOnInterval, EmitOnThreshold (Phase 3)
-- **Watermark algorithm** — maxTimestamp - maxLateness (Phase 3)
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): строки раздела 3.38.
+
 - **Code of Conduct** — safe space (Launch)
 - **Star goals** — 50/100/500 stars (Launch)
 - **Repository structure** — Go-targeted tree (Architecture)
@@ -1477,45 +1320,7 @@ purr/
 └── __init__.py       # Public API
 ```
 
-### Target (v1.0.0)
-```
-purr/
-├── core/
-│   ├── store.py          # KV store (enhanced)
-│   ├── transactions.py   # MULTI/EXEC
-│   └── commands.py       # Command registry
-├── structures/
-│   ├── strings.py        # String operations
-│   ├── hashes.py         # Hash operations
-│   ├── lists.py          # List operations
-│   ├── sets.py           # Set operations
-│   ├── sorted_sets.py    # Sorted set operations
-│   └── streams.py        # Stream operations
-├── state/
-│   ├── state_machine.py  # FSM
-│   └── saga.py           # Sagas
-├── events/
-│   ├── event.py          # Event types
-│   ├── event_bus.py      # Pub/sub
-│   ├── event_stream.py   # Persistent stream
-│   └── versioning.py     # Schema migration
-├── infra/
-│   ├── middleware.py     # Pipeline
-│   ├── retry.py          # Retry
-│   ├── health.py         # Health
-│   └── auth.py           # Authentication
-├── server/
-│   ├── tcp.py            # TCP server (RESP)
-│   ├── http.py           # REST API
-│   └── websocket.py      # WebSocket
-├── client/
-│   ├── __init__.py       # Python client
-│   └── connection.py     # Connection pool
-└── cli/
-    └── main.py           # CLI entry point
-```
-
----
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): раздел 4, целевая архитектура.
 
 ## 4. Performance Targets
 
@@ -1587,9 +1392,6 @@ await saga.execute({"user_id": 1, "items": [...]})
 | **Storage** | In-memory + RDB/AOF | SQLite WAL |
 | **Persistence** | Optional | Always (SQLite) |
 | **Thread Safety** | Single-threaded | Thread-safe (threading.local) |
-| **Replication** | Master-slave | Planned (Phase 4) |
-| **Cluster** | Redis Cluster | Planned (Phase 4) |
-| **Protocol** | RESP | Planned (Phase 3) |
 | **Scripting** | Lua | Python (sagas) |
 | **Cost** | RAM-heavy | Disk-efficient |
 
@@ -1604,29 +1406,25 @@ await saga.execute({"user_id": 1, "items": [...]})
 - Faster (in-memory)
 - More mature (15+ years)
 - Larger ecosystem
-- Cluster support
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): строки раздела 6.
+
 - More data structures
 
 ---
 
 ## 7. Milestones
 
-| Milestone | Features | ETA |
+| Milestone | Features | Срок |
 |---|---|---|
 | **v0.2.0** | Hashes, Lists, Sets | 1 week |
 | **v0.3.0** | Transactions, Pipelines | 2 weeks |
-| **v0.4.0** | TCP Server, HTTP API | 3 weeks |
-| **v0.5.0** | Pub/Sub, Auth | 1 month |
-| **v0.6.0** | Client Library, CLI | 1.5 months |
-| **v0.7.0** | Cluster, Replication | 2 months |
-| **v1.0.0** | Full Redis compatibility | 3 months |
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): строки раздела 7.
+
 
 ---
 
 ## 8. Open Questions
 
-1. **RESP Protocol**: Implement full RESP2 or simplified version?
-2. **Persistence**: RDB snapshots vs AOF vs both?
-3. **Cluster**: Consensus algorithm (Raft vs Paxos)?
-4. **Auth**: Password-only or ACL-based?
+> Вынесено в `FUTURE_PLAN_SERVER.md` (отложено, 2026-11-04): пункты раздела 8.
+
 5. **License**: MIT vs Apache 2.0?
