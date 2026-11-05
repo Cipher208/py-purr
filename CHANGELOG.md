@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
+- **`send()` no longer surfaces a callback's own exception.** An `on_exit`
+  or `on_enter` that raises after the transition is committed now raises
+  `purr.CallbackError` instead, so a handler catching `ValueError` (or any
+  other exception type raised by a callback) no longer catches the failure:
+  catch `CallbackError` and read `exc.__cause__` for the original exception.
+
 - **The journal event shape changed.** `flush()` now emits one
   `{"op": "flush"}` event instead of a `delete` per key, and `set`/`incr`/
   `mset` events carry `expires_at` when the key has an expiry. A consumer
@@ -78,6 +84,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call `sweep()` on its own schedule.
 
 ### Added
+- `CallbackError` is exported from `purr` as part of the public API. It
+  names the failed hook in `callback` (`on_exit` or `on_enter`) and marks the
+  transition as already stored with `committed = True`.
+
 - `EventStream.append_many()` — atomic batch append (duplicate id rolls back
   the whole batch); ~10× faster than per-event appends.
 - Schema migration v2 for `EventStream`: composite index
@@ -125,6 +135,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ValueError`: use `reset_cursor(name)` to clear a cursor on purpose.
 
 ### Fixed
+- A committed transition no longer looks like a failed one. A callback that
+  raised after the commit used to reach the caller as its own exception with
+  no sign that the state and its `transition` event were already stored;
+  `CallbackError.committed is True` now says so, and sending that event again
+  is wrong: a repeat `send()` of the same event returns `False`. Errors from
+  writing the transition still surface unchanged (for example `RuntimeError`)
+  with the database rolled back, and a transition with no exception behaves
+  exactly as before.
+
 - `StateMachine.send()` and `set_state()` now publish a new state only after
   the commit succeeds. When the write fails, the error is still raised, but
   `current_state` and `state_data` keep their previous values and match the
