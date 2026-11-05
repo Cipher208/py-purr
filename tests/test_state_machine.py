@@ -1,6 +1,12 @@
 """Tests for PURR State Machine."""
 
+import json
 import sqlite3
+from collections.abc import Callable
+from contextlib import closing
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -166,3 +172,126 @@ class TestStateMachineJournal:
         assert events == []
         sm.close()
         es.close()
+
+
+def _read_state(db: Path) -> tuple[str, dict[str, Any]]:
+    """Read the persisted state through a connection of its own."""
+    with closing(sqlite3.connect(str(db))) as conn:
+        row = conn.execute(
+            "SELECT current_state, state_data FROM state_machines WHERE name = 'm'"
+        ).fetchone()
+    return row[0], json.loads(row[1])
+
+
+def _read_events(db: Path) -> list[tuple[str, str | None, str]]:
+    """Read journal payloads through a connection of its own."""
+    with closing(sqlite3.connect(str(db))) as conn:
+        rows = conn.execute("SELECT payload FROM events ORDER BY timestamp, rowid").fetchall()
+    parsed = [json.loads(row[0]) for row in rows]
+    return [(event["op"], event.get("from"), event["to"]) for event in parsed]
+
+
+@dataclass
+class Rig:
+    sm: StateMachine
+    es: EventStream
+    db: Path
+    calls: list[tuple[str, str]]
+    original_emit: Callable[[dict[str, Any]], None]
+
+    def break_journal(self) -> None:
+        def fail(payload: dict[str, Any]) -> None:
+            raise RuntimeError("forced journal failure")
+
+        self.sm._journal_emit = fail
+
+    def restore_journal(self) -> None:
+        self.sm._journal_emit = self.original_emit
+
+
+@pytest.fixture
+def rig(tmp_path):
+    db = tmp_path / "state.db"
+    es = EventStream(db)
+    sm = StateMachine("m", db_path=db, journal=es)
+    calls: list[tuple[str, str]] = []
+    sm.on_exit("A", lambda state: calls.append(("exit", state.name)))
+    sm.on_enter("B", lambda state: calls.append(("enter", state.name)))
+    sm.add_transition("A", "B", "go")
+    sm.set_state("A", {"marker": "old"})
+    stand = Rig(sm=sm, es=es, db=db, calls=calls, original_emit=sm._journal_emit)
+    yield stand
+    # Teardown runs even when an assertion failed: an open SQLite handle on
+    # Windows blocks pytest from removing tmp_path (PermissionError).
+    stand.restore_journal()
+    sm.close()
+    es.close()
+
+
+class TestStateMachineRollback:
+    """A failed write must leave the machine and the database in agreement."""
+
+    def test_send_keeps_memory_equal_to_database_after_failed_write(self, rig):
+        rig.break_journal()
+        with pytest.raises(RuntimeError):
+            rig.sm.send("go", {"marker": "new"})
+        assert (rig.sm.current_state, rig.sm.state_data) == _read_state(rig.db)
+
+    def test_set_state_keeps_memory_equal_to_database_after_failed_write(self, rig):
+        rig.break_journal()
+        with pytest.raises(RuntimeError):
+            rig.sm.set_state("Z", {"marker": "new"})
+        assert (rig.sm.current_state, rig.sm.state_data) == _read_state(rig.db)
+
+    def test_send_propagates_the_write_error(self, rig):
+        rig.break_journal()
+        with pytest.raises(RuntimeError) as excinfo:
+            rig.sm.send("go", {"marker": "new"})
+        assert str(excinfo.value) == "forced journal failure"
+
+    def test_set_state_propagates_the_write_error(self, rig):
+        rig.break_journal()
+        with pytest.raises(RuntimeError) as excinfo:
+            rig.sm.set_state("Z", {"marker": "new"})
+        assert str(excinfo.value) == "forced journal failure"
+
+    def test_failed_transition_calls_no_callbacks(self, rig):
+        rig.break_journal()
+        with pytest.raises(RuntimeError):
+            rig.sm.send("go", {"marker": "new"})
+        assert rig.calls == []
+
+    def test_failed_transition_appends_no_event(self, rig):
+        rig.break_journal()
+        with pytest.raises(RuntimeError):
+            rig.sm.send("go", {"marker": "new"})
+        assert _read_events(rig.db) == [("set", None, "A")]
+
+    def test_failed_transition_leaves_previous_state_in_database(self, rig):
+        rig.break_journal()
+        with pytest.raises(RuntimeError):
+            rig.sm.send("go", {"marker": "new"})
+        assert _read_state(rig.db) == ("A", {"marker": "old"})
+
+    def test_successful_transition_changes_state_and_data(self, rig):
+        rig.sm.send("go", {"marker": "new"})
+        assert (rig.sm.current_state, rig.sm.state_data) == ("B", {"marker": "new"})
+
+    def test_successful_transition_persists_state(self, rig):
+        rig.sm.send("go", {"marker": "new"})
+        assert _read_state(rig.db) == ("B", {"marker": "new"})
+
+    def test_successful_transition_calls_callbacks_in_order(self, rig):
+        rig.sm.send("go", {"marker": "new"})
+        assert rig.calls == [("exit", "A"), ("enter", "B")]
+
+    def test_successful_transition_appends_event(self, rig):
+        rig.sm.send("go", {"marker": "new"})
+        assert _read_events(rig.db) == [("set", None, "A"), ("transition", "A", "B")]
+
+    def test_retry_after_failed_send_succeeds(self, rig):
+        rig.break_journal()
+        with pytest.raises(RuntimeError):
+            rig.sm.send("go", {"marker": "new"})
+        rig.restore_journal()
+        assert (rig.sm.send("go", {"marker": "new"}), rig.sm.current_state) == (True, "B")
