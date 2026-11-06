@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import json
+import threading
 from collections.abc import Callable, Coroutine
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+from .backend import SQLiteBackend
 
 
 class SagaStatus(StrEnum):
@@ -54,7 +59,7 @@ def _unchanged(old: Any, new: Any) -> bool:
         return False
 
 
-class Saga:
+class Saga(SQLiteBackend):
     """Saga pattern for distributed transactions.
 
     Executes steps sequentially. If any step fails, compensates
@@ -65,15 +70,39 @@ class Saga:
     Rollback covers previously completed steps only; the failed
     step's own compensation must be handled by the action itself.
 
-    The saga is in-memory: if the process dies, all state is lost.
+    The saga is in-memory unless db_path is given. With db_path a checkpoint
+    (name, status, current_step, data) is written to the shared SQLite file
+    on every step and at completion; no automatic resume is performed.
     """
 
-    def __init__(self, name: str) -> None:
+    ENGINE_NAME = "saga"
+    SCHEMA_VERSION = 1
+    MIGRATIONS = {
+        1: """
+            CREATE TABLE IF NOT EXISTS saga_state (
+                name TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                current_step INTEGER NOT NULL,
+                data TEXT NOT NULL DEFAULT '{}'
+            );
+            """,
+    }
+
+    def _init_db(self) -> None:
+        self.run_migrations()
+
+    def __init__(self, name: str, db_path: str | Path | None = None) -> None:
         self.name = name
         self._steps: list[SagaStep] = []
         self._status = SagaStatus.PENDING
         self._data: dict[str, Any] = {}
         self._current_step = 0
+        if db_path is None:
+            # Keep the backend unopened: Saga(name) stays purely in memory.
+            self._local = threading.local()
+            self._db_path = None
+        else:
+            super().__init__(db_path)
 
     @property
     def status(self) -> SagaStatus:
@@ -112,6 +141,9 @@ class Saga:
             for i, step in enumerate(self._steps):
                 self._current_step = i
                 step.status = SagaStatus.RUNNING
+                # Written BEFORE the action: a process dying inside the step
+                # still leaves a non-completed checkpoint in the shared file.
+                self._write_checkpoint()
 
                 try:
                     # Deep copy: in-place mutations of nested values must be
@@ -141,11 +173,14 @@ class Saga:
                     raise
 
             self._status = SagaStatus.COMPLETED
+            self._write_checkpoint()
             return self._data
 
         except Exception:
             if self._status != SagaStatus.COMPENSATED:
                 self._status = SagaStatus.FAILED
+            with contextlib.suppress(Exception):
+                self._write_checkpoint()
             raise
 
     async def _compensate(self, failed_step: int) -> None:
@@ -184,4 +219,42 @@ class Saga:
                 }
                 for step in self._steps
             ],
+        }
+
+    def _write_checkpoint(self) -> None:
+        """Upsert the visible slice after each transition; never a journal event."""
+        if self._db_path is None:
+            return
+        try:
+            payload = json.dumps(self._data, default=str)
+        except (TypeError, ValueError, RecursionError):
+            payload = "{}"
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO saga_state (name, status, current_step, data)"
+            " VALUES (?, ?, ?, ?)",
+            (self.name, self._status.value, self._current_step, payload),
+        )
+        conn.commit()
+
+    def load_persisted_state(self) -> dict[str, Any] | None:
+        """Read this saga's checkpoint from the shared file, if one exists.
+
+        Only name/status/current_step/data are persisted: actions, compensations
+        and the write-tracking fields are not, so nothing here can be resumed.
+        """
+        if self._db_path is None:
+            return None
+        cursor = self._get_conn().execute(
+            "SELECT name, status, current_step, data FROM saga_state WHERE name = ?",
+            (self.name,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "name": row["name"],
+            "status": row["status"],
+            "current_step": row["current_step"],
+            "data": json.loads(row["data"]),
         }
