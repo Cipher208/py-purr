@@ -379,10 +379,7 @@ os._exit(0)
         assert (marker.read_text(encoding="utf-8"), hasattr(Saga, "resume")) == (
             "ran\n",
             False,
-        ), (
-            f"marker={marker.read_text(encoding='utf-8')!r} "
-            f"state={second.get_state()!r}"
-        )
+        ), f"marker={marker.read_text(encoding='utf-8')!r} state={second.get_state()!r}"
 
     def test_get_state_shape_is_unchanged(self, tmp_path):
         saga = self._saga("shape", tmp_path / "shape.db")
@@ -471,11 +468,8 @@ os._exit(0)
         try:
             machines = conn.execute("SELECT count(*) FROM state_machines").fetchone()[0]
             ops = [
-                json.loads(row[0]).get("op")
-                for row in conn.execute("SELECT payload FROM events")
+                json.loads(row[0]).get("op") for row in conn.execute("SELECT payload FROM events")
             ]
         finally:
             conn.close()
-        assert (machines, ops) == (1, ["set", "transition"]), (
-            f"machines={machines} ops={ops}"
-        )
+        assert (machines, ops) == (1, ["set", "transition"]), f"machines={machines} ops={ops}"
