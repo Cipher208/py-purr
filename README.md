@@ -166,7 +166,15 @@ sm.close()
 
 ### 3. Sagas (Compensating Transactions)
 
-Execute multi-step distributed operations safely. If any step fails, PURR automatically executes compensating rollback actions of previously completed steps in reverse order and rolls their data back: keys the step added are removed, keys it overwrote or deleted get their previous values back. Note: the failed step's own compensation is not run — handle it inside the action itself. Sagas are in-memory: if the process dies, all saga state is lost.
+Execute multi-step distributed operations safely. If any step fails, PURR automatically executes compensating rollback actions of previously completed steps in reverse order and rolls their data back: keys the step added are removed, keys it overwrote or deleted get their previous values back. Note: the failed step's own compensation is not run — handle it inside the action itself.
+
+`Saga(name)` is still purely in-memory: if the process dies, all saga state is lost. Pass `db_path=` to keep a checkpoint in that SQLite file instead. A snapshot of `name`, `status`, `current_step` and `data` is written **before every step** and again on completion, so a process dying inside a step leaves a non-`completed` row behind; another process opening the same file can read it with `Saga(name, db_path=<the same path>).load_persisted_state()`. The `saga_state` table is created by the normal migration runner, in the same file as everything else. With no `db_path`, `load_persisted_state()` returns `None`.
+
+**There is no automatic resume.** Re-registering the steps and executing the saga again does not skip actions that already ran, and there is no `resume()`. A step can send an email and die before its result is recorded; an automatic resume would send that email a second time. The checkpoint is a signal, not a continuation — the caller decides what to do about side effects that already happened.
+
+**The checkpoint cannot compensate and is invisible to a replay.** Only `name`, `status`, `current_step` and `data` are saved; `action`, `compensation`, `written` and `restore` are not. Compensation after a crash is therefore impossible with the library alone, and already-performed side effects are not undone. No journal `op` is written for a checkpoint: replaying `set`/`delete`/`expire`/`flush`/`transition` reconstructs the data but never the saga. This is an accepted limitation of the table-only form.
+
+`data` is JSON. Objects that are not JSON-serialisable are turned into strings with `str()` — an object like `Ambiguous` becomes `<__main__.Ambiguous object at 0x...>`, losing its type, fields and methods, and that string changes between runs; if serialization fails outright, the snapshot stores `{}` and all of `data` is lost. The in-memory saga keeps the original object; the loss is one-way.
 
 ```python
 import asyncio
@@ -194,6 +202,34 @@ try:
     asyncio.run(saga.execute())
 except RuntimeError as exc:
     assert str(exc) == "Migration failed!"
+```
+
+With a `db_path` the checkpoint is readable from a separate opener of the
+same file (a second process would see the same row):
+
+```python
+import asyncio
+import tempfile
+from pathlib import Path
+
+from purr import Saga
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = str(Path(tmp) / "purr.db")
+
+    async def reserve(ctx):
+        ctx["reserved"] = True
+        return ctx
+
+    saga = Saga("deploy", db_path=path)
+    saga.add_step("reserve", reserve)
+    asyncio.run(saga.execute())
+
+    observer = Saga("deploy", db_path=path)
+    print(observer.load_persisted_state())
+    observer.close()
+    saga.close()
+# {'name': 'deploy', 'status': 'completed', 'current_step': 0, 'data': {'reserved': True}}
 ```
 
 ---
@@ -331,7 +367,7 @@ uv sync --extra dev
 uv run pytest -v
 ```
 
-The suite is 226 tests and runs in a few seconds. CI additionally enforces
+The suite is 239 tests and runs in a few seconds. CI additionally enforces
 `ruff check`, `ruff format --check`, and a coverage gate of 85% on Python
 3.11, 3.12 and 3.13.
 

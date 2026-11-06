@@ -104,6 +104,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the API; `reset_cursor()` is the documented way to restart that
   consumer from the beginning.
 
+- `Saga(name, db_path=...)` optionally keeps a checkpoint. The path is
+  optional: `Saga(name)` still runs entirely in memory and writes nothing.
+  With a path, a `saga_state` table is created in that SQLite file by the
+  normal migration runner, and a snapshot of `name`, `status`, `current_step`
+  and `data` is written before every step and again at completion. A process
+  that dies inside a step therefore leaves a non-`completed` row that another
+  process opening the same file can see.
+- `Saga.load_persisted_state()` reads that snapshot back. It returns `None`
+  when no `db_path` was given or no snapshot exists yet, and otherwise a dict
+  with `name`, `status`, `current_step` and `data` — nothing else.
+
 ### Changed
 - `Store.set/delete/expire/incr/mset` and `StateMachine.send/set_state` write
   their journal event **inside the data's transaction** instead of after the
@@ -134,7 +145,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `EventStream.set_cursor()` rejects an empty/`None` event id with
   `ValueError`: use `reset_cursor(name)` to clear a cursor on purpose.
 
+- A saga is no longer strictly in-memory. `Saga(name)` is unchanged, but with
+  a `db_path` the checkpoint survives the process; the old rule "if the
+  process dies, all saga state is lost" now applies only to the form without
+  a path. Existing callers need no change: making the path obligatory would
+  have broken the legacy saga tests and the README tours, so it was not made
+  obligatory. There is no breaking change.
+- Saga state is deliberately invisible to journal replay. No new `op` is
+  emitted for a checkpoint, the six `op` readers are untouched, and a replay
+  of `set`/`delete`/`expire`/`flush`/`transition` reconstructs the data but
+  never the saga. ADR-001 is honoured as "do not break the existing
+  co-located transactions", not as "every new state row must carry an event"
+  — an accepted limitation of the table-only form.
+- Checkpoint `data` is lossy for Python objects. It is serialised with
+  `json.dumps(..., default=str)`: an object such as `Ambiguous` becomes a
+  string like `<__main__.Ambiguous object at 0x...>`, losing its type, fields
+  and methods, and that string is not stable between runs. If serialization
+  raises `TypeError`, `ValueError` or `RecursionError` the snapshot stores
+  `"{}"` and all of `data` is lost. The in-memory saga keeps the original
+  object; the loss is one-way.
+- There is no automatic resume. Re-registering the steps and running the saga
+  again does not skip actions that already ran, and there is no `resume()` in
+  the public API. A step can send an email and die before its result is
+  recorded; an automatic resume would send that email a second time, so the
+  library stops at a visible signal and leaves the decision to the caller.
+  Only `name`, `status`, `current_step` and `data` are saved — `action`,
+  `compensation`, `written` and `restore` are not — so compensation after a
+  crash is impossible with the library alone, and side effects already
+  performed are not undone.
+
 ### Fixed
+- A crash no longer leaves a saga with nothing to report. Before, a restarted
+  process could not tell an interrupted saga from one that never ran; with a
+  `db_path` the shared file now holds the last snapshot written before the
+  step that died, with a status other than `completed`. This is a signal only:
+  nothing resumes, nothing compensates, and no side effect is undone.
+
 - A committed transition no longer looks like a failed one. A callback that
   raised after the commit used to reach the caller as its own exception with
   no sign that the state and its `transition` event were already stored;
@@ -190,10 +236,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engines on the same file, fresh connections — blocked with
   `OperationalError: database is locked` until `close()`. `append_many()`
   already did this; `append()` now matches.
-- README contracts aligned with actual behavior: saga is in-memory and its
-  rollback covers previously completed steps only; TTL expiry is lazy — a
-  read reports an expired key as missing and leaves it in place (see
-  Breaking); suite size updated.
+- README contracts aligned with actual behavior (historical entry,
+  superseded for sagas): at that time a saga was in-memory and its rollback
+  covered previously completed steps only; TTL expiry is lazy — a read
+  reports an expired key as missing and leaves it in place (see Breaking);
+  suite size updated. With an optional `db_path` a saga now also writes a
+  checkpoint — see Changed above for the current contract.
 - `EventStream._prune()` now commits whenever the connection holds a
   transaction, not only when rows were actually deleted (pass-3 regression):
   the `DELETE`s open an implicit transaction even with `rowcount == 0`, so
