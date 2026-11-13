@@ -66,11 +66,12 @@ def _seconds_left(iso: str) -> float:
 
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="purr-replay-"))
-    db = tmp / "store.db"
-    journal = EventStream(str(db))
-    store = Store(str(db), journal=journal)
+    store = journal = bulk = bulk_journal = clone = None
     bad = 0
     try:
+        db = tmp / "store.db"
+        journal = EventStream(str(db))
+        store = Store(str(db), journal=journal)
         # 1. set(ttl=) несёт срок
         store.set("s1", "v", ttl=120)
         last = events(journal)[-1]
@@ -102,8 +103,8 @@ def main() -> int:
         bad += 0 if ok else 1
 
         # 5. flush — одно событие, реплей очищает
-        bulk = Store(str(tmp / "bulk.db"), journal=EventStream(str(tmp / "bulk.db")))
-        bulk_journal = bulk._journal  # noqa: SLF001 - судье нужен тот же поток
+        bulk_journal = EventStream(str(tmp / "bulk.db"))
+        bulk = Store(str(tmp / "bulk.db"), journal=bulk_journal)
         for i in range(200):
             bulk.set(f"f{i}", i)
         before = len(events(bulk_journal))
@@ -131,11 +132,12 @@ def main() -> int:
         ttl_ok = clone.ttl("s1") is not None and store.ttl("s1") is not None
         print(f"{'PASS' if same and ttl_ok else 'FAIL'}  реплей: ключи {sorted(clone.keys())} == {sorted(store.keys())}, ttl(s1)={'есть' if ttl_ok else 'НЕТ'}")
         bad += 0 if same and ttl_ok else 1
-        clone.close()
-        bulk.close()
     finally:
-        store.close()
-        journal.close()
+        # Все соединения — до rmtree: файл, открытый в WAL, на Windows
+        # не удаляется, а ignore_errors=True проглотил бы такую течь.
+        for resource in (clone, bulk, bulk_journal, store, journal):
+            if resource is not None:
+                resource.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
     print(f"ИТОГ: провалено {bad} из 7")

@@ -44,6 +44,7 @@
 import json
 import os
 import random
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -103,56 +104,59 @@ def cmd_run(runs: int) -> int:
 
     for n in range(1, runs + 1):
         tmp = tempfile.mkdtemp(prefix="purr-crash-")
-        db_path = os.path.join(tmp, "purr.db")
-        keys_path = os.path.join(tmp, "confirmed.txt")
-
-        target = random.randint(40, 160)
-        child = subprocess.Popen(
-            [python, SELF, "write", db_path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-        )
-
-        confirmed = []
         try:
-            for line in child.stdout:
-                if line.startswith("OK "):
-                    confirmed.append(line[3:].strip())
-                    if len(confirmed) >= target:
-                        break
+            db_path = os.path.join(tmp, "purr.db")
+            keys_path = os.path.join(tmp, "confirmed.txt")
+
+            target = random.randint(40, 160)
+            child = subprocess.Popen(
+                [python, SELF, "write", db_path],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            )
+
+            confirmed = []
+            try:
+                for line in child.stdout:
+                    if line.startswith("OK "):
+                        confirmed.append(line[3:].strip())
+                        if len(confirmed) >= target:
+                            break
+            finally:
+                # Небольшая случайная пауза, чтобы убийство попало внутрь следующей записи.
+                time.sleep(random.uniform(0.0, 0.03))
+                child.kill()
+                child.wait()
+
+            with open(keys_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(confirmed))
+
+            verify = subprocess.run(
+                [python, SELF, "verify", db_path, keys_path],
+                capture_output=True, text=True, env=env,
+            )
+            try:
+                data = json.loads(verify.stdout.strip().splitlines()[-1])
+            except Exception:
+                data = {"confirmed": len(confirmed), "survived": 0, "missing_count": len(confirmed),
+                        "missing": confirmed[:10], "integrity": "VERIFY_FAILED",
+                        "stderr": verify.stderr[-400:]}
+
+            # Вердикт выносит verify (у него правило одно), оркестратор его только переносит.
+            if verify.returncode != 0:
+                bad += 1
+
+            data["run"] = n
+            data["killed_at"] = len(confirmed)
+            results.append(data)
+            print("run %d: убит после %d подтверждений → выжило %d, потеряно %d, integrity=%s" % (
+                n, len(confirmed), data.get("survived", 0), data.get("missing_count", 0),
+                data.get("integrity", "?")))
+            if data.get("missing"):
+                print("        первые потерянные: %s" % ", ".join(data["missing"][:5]))
+            if data.get("stderr"):
+                print("        stderr verify: %s" % data["stderr"].replace("\n", " ")[:300])
         finally:
-            # Небольшая случайная пауза, чтобы убийство попало внутрь следующей записи.
-            time.sleep(random.uniform(0.0, 0.03))
-            child.kill()
-            child.wait()
-
-        with open(keys_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(confirmed))
-
-        verify = subprocess.run(
-            [python, SELF, "verify", db_path, keys_path],
-            capture_output=True, text=True, env=env,
-        )
-        try:
-            data = json.loads(verify.stdout.strip().splitlines()[-1])
-        except Exception:
-            data = {"confirmed": len(confirmed), "survived": 0, "missing_count": len(confirmed),
-                    "missing": confirmed[:10], "integrity": "VERIFY_FAILED",
-                    "stderr": verify.stderr[-400:]}
-
-        # Вердикт выносит verify (у него правило одно), оркестратор его только переносит.
-        if verify.returncode != 0:
-            bad += 1
-
-        data["run"] = n
-        data["killed_at"] = len(confirmed)
-        results.append(data)
-        print("run %d: убит после %d подтверждений → выжило %d, потеряно %d, integrity=%s" % (
-            n, len(confirmed), data.get("survived", 0), data.get("missing_count", 0),
-            data.get("integrity", "?")))
-        if data.get("missing"):
-            print("        первые потерянные: %s" % ", ".join(data["missing"][:5]))
-        if data.get("stderr"):
-            print("        stderr verify: %s" % data["stderr"].replace("\n", " ")[:300])
+            shutil.rmtree(tmp, ignore_errors=True)
 
     total_confirmed = sum(r.get("confirmed", 0) for r in results)
     total_missing = sum(r.get("missing_count", 0) for r in results)
@@ -221,57 +225,60 @@ def cmd_run_txn(runs: int) -> int:
 
     for n in range(1, runs + 1):
         tmp = tempfile.mkdtemp(prefix="purr-txn-")
-        db_path = os.path.join(tmp, "purr.db")
-        keys_path = os.path.join(tmp, "confirmed.txt")
-
-        child = subprocess.Popen(
-            [python, SELF, "write-txn", db_path],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-        )
-
-        pre = []
-        inside_at = None
         try:
-            for line in child.stdout:
-                if line.startswith("OK "):
-                    pre.append(line[3:].strip())
-                elif line.startswith("BATCH_START"):
-                    continue
-                elif line.startswith("PROGRESS "):
-                    inside_at = int(line.split()[1])
-                    if inside_at >= 100:  # гарантированно внутри транзакции
+            db_path = os.path.join(tmp, "purr.db")
+            keys_path = os.path.join(tmp, "confirmed.txt")
+
+            child = subprocess.Popen(
+                [python, SELF, "write-txn", db_path],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            )
+
+            pre = []
+            inside_at = None
+            try:
+                for line in child.stdout:
+                    if line.startswith("OK "):
+                        pre.append(line[3:].strip())
+                    elif line.startswith("BATCH_START"):
+                        continue
+                    elif line.startswith("PROGRESS "):
+                        inside_at = int(line.split()[1])
+                        if inside_at >= 100:  # гарантированно внутри транзакции
+                            break
+                    elif line.startswith("BATCH_DONE"):
                         break
-                elif line.startswith("BATCH_DONE"):
-                    break
+            finally:
+                child.kill()
+                child.wait()
+
+            with open(keys_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(pre))
+
+            verify = subprocess.run(
+                [python, SELF, "verify-txn", db_path, keys_path],
+                capture_output=True, text=True, env=env,
+            )
+            try:
+                data = json.loads(verify.stdout.strip().splitlines()[-1])
+            except Exception:
+                data = {"pre_confirmed": len(pre), "pre_missing": -1, "tx_present": -1,
+                        "partial_commit": True, "integrity": "VERIFY_FAILED",
+                        "stderr": verify.stderr[-300:]}
+
+            flag = "OK " if (data["pre_missing"] == 0 and not data["partial_commit"]
+                             and data["integrity"] == "ok") else "БРАК"
+            if flag == "БРАК":
+                bad += 1
+            where = ("внутри транзакции на %d" % inside_at) if inside_at else "НЕ попали внутрь"
+            print("run %d: %s  убит %s  pre потеряно=%s  tx записано=%d/500  "
+                  "частичный=%s  integrity=%s" % (
+                      n, flag, where, data["pre_missing"], data["tx_present"],
+                      data["partial_commit"], data["integrity"]))
+            if data.get("stderr"):
+                print("        stderr: %s" % data["stderr"].replace("\n", " ")[:250])
         finally:
-            child.kill()
-            child.wait()
-
-        with open(keys_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(pre))
-
-        verify = subprocess.run(
-            [python, SELF, "verify-txn", db_path, keys_path],
-            capture_output=True, text=True, env=env,
-        )
-        try:
-            data = json.loads(verify.stdout.strip().splitlines()[-1])
-        except Exception:
-            data = {"pre_confirmed": len(pre), "pre_missing": -1, "tx_present": -1,
-                    "partial_commit": True, "integrity": "VERIFY_FAILED",
-                    "stderr": verify.stderr[-300:]}
-
-        flag = "OK " if (data["pre_missing"] == 0 and not data["partial_commit"]
-                         and data["integrity"] == "ok") else "БРАК"
-        if flag == "БРАК":
-            bad += 1
-        where = ("внутри транзакции на %d" % inside_at) if inside_at else "НЕ попали внутрь"
-        print("run %d: %s  убит %s  pre потеряно=%s  tx записано=%d/500  "
-              "частичный=%s  integrity=%s" % (
-                  n, flag, where, data["pre_missing"], data["tx_present"],
-                  data["partial_commit"], data["integrity"]))
-        if data.get("stderr"):
-            print("        stderr: %s" % data["stderr"].replace("\n", " ")[:250])
+            shutil.rmtree(tmp, ignore_errors=True)
 
     print()
     print("ИТОГ: прогонов %d, брак %d" % (runs, bad))
@@ -364,67 +371,70 @@ def cmd_run_journal(runs: int, slow: bool = False) -> int:
 
     for n in range(1, runs + 1):
         tmp = tempfile.mkdtemp(prefix="purr-jrn-")
-        kv_path = os.path.join(tmp, "purr.db")
-        ev_path = os.path.join(tmp, "events.db")
-        keys_path = os.path.join(tmp, "confirmed.txt")
-
-        target = random.randint(40, 120)
-        child = subprocess.Popen(
-            [python, SELF, "write-journal", kv_path, ev_path] + (["slow"] if slow else []),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-        )
-
-        confirmed = []
         try:
-            for line in child.stdout:
-                if line.startswith("OK "):
-                    confirmed.append(line[3:].strip())
-                    if len(confirmed) >= target:
-                        break
+            kv_path = os.path.join(tmp, "purr.db")
+            ev_path = os.path.join(tmp, "events.db")
+            keys_path = os.path.join(tmp, "confirmed.txt")
+
+            target = random.randint(40, 120)
+            child = subprocess.Popen(
+                [python, SELF, "write-journal", kv_path, ev_path] + (["slow"] if slow else []),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            )
+
+            confirmed = []
+            try:
+                for line in child.stdout:
+                    if line.startswith("OK "):
+                        confirmed.append(line[3:].strip())
+                        if len(confirmed) >= target:
+                            break
+            finally:
+                time.sleep(random.uniform(0.0, 0.02))
+                child.kill()
+                child.wait()
+
+            with open(keys_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(confirmed))
+
+            verify = subprocess.run(
+                [python, SELF, "verify-journal", kv_path, ev_path, keys_path],
+                capture_output=True, text=True, env=env,
+            )
+            try:
+                data = json.loads(verify.stdout.strip().splitlines()[-1])
+            except Exception:
+                data = {"confirmed": len(confirmed), "confirmed_missing": -1, "kv_keys": -1,
+                        "journal_events": -1, "gap": -1, "phantom": -1,
+                        "integrity": "VERIFY_FAILED", "journal_integrity": "?",
+                        "stderr": verify.stderr[-300:]}
+
+            # Прогон состоялся, только если ребёнок успел подтвердить хотя бы одну
+            # запись. Пустая база даёт разрыв 0 и выглядит зелёной, хотя проверять
+            # было нечего: прогон, умерший до первой записи, не должен проходить.
+            exercised = data.get("confirmed", 0) > 0 and data.get("kv_keys", 0) > 0
+            if verify.returncode != 0 or not exercised:
+                bad += 1
+
+            gaps.append(data.get("gap", 0))
+            phantoms += data.get("phantom", 0)
+            losses += data.get("confirmed_missing", 0)
+
+            print("run %d: подтверждено %d | в KV %d | событий %d | разрыв %d | фантом %d | "
+                  "integrity %s / журнал %s" % (
+                      n, data.get("confirmed", 0), data.get("kv_keys", 0),
+                      data.get("journal_events", 0),
+                      data.get("gap", 0), data.get("phantom", 0),
+                      data.get("integrity", "?"), data.get("journal_integrity", "?")))
+            if not exercised:
+                print("        ПРОГОН НЕ СОСТОЯЛСЯ: ребёнок не подтвердил ни одной "
+                      "записи, вердикт не выносится")
+            if data.get("gap_sample"):
+                print("        пример разрыва: %s" % ", ".join(data["gap_sample"]))
+            if data.get("stderr"):
+                print("        stderr: %s" % data["stderr"].replace("\n", " ")[:250])
         finally:
-            time.sleep(random.uniform(0.0, 0.02))
-            child.kill()
-            child.wait()
-
-        with open(keys_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(confirmed))
-
-        verify = subprocess.run(
-            [python, SELF, "verify-journal", kv_path, ev_path, keys_path],
-            capture_output=True, text=True, env=env,
-        )
-        try:
-            data = json.loads(verify.stdout.strip().splitlines()[-1])
-        except Exception:
-            data = {"confirmed": len(confirmed), "confirmed_missing": -1, "kv_keys": -1,
-                    "journal_events": -1, "gap": -1, "phantom": -1,
-                    "integrity": "VERIFY_FAILED", "journal_integrity": "?",
-                    "stderr": verify.stderr[-300:]}
-
-        # Прогон состоялся, только если ребёнок успел подтвердить хотя бы одну
-        # запись. Пустая база даёт разрыв 0 и выглядит зелёной, хотя проверять
-        # было нечего: прогон, умерший до первой записи, не должен проходить.
-        exercised = data.get("confirmed", 0) > 0 and data.get("kv_keys", 0) > 0
-        if verify.returncode != 0 or not exercised:
-            bad += 1
-
-        gaps.append(data.get("gap", 0))
-        phantoms += data.get("phantom", 0)
-        losses += data.get("confirmed_missing", 0)
-
-        print("run %d: подтверждено %d | в KV %d | событий %d | разрыв %d | фантом %d | "
-              "integrity %s / журнал %s" % (
-                  n, data.get("confirmed", 0), data.get("kv_keys", 0),
-                  data.get("journal_events", 0),
-                  data.get("gap", 0), data.get("phantom", 0),
-                  data.get("integrity", "?"), data.get("journal_integrity", "?")))
-        if not exercised:
-            print("        ПРОГОН НЕ СОСТОЯЛСЯ: ребёнок не подтвердил ни одной "
-                  "записи, вердикт не выносится")
-        if data.get("gap_sample"):
-            print("        пример разрыва: %s" % ", ".join(data["gap_sample"]))
-        if data.get("stderr"):
-            print("        stderr: %s" % data["stderr"].replace("\n", " ")[:250])
+            shutil.rmtree(tmp, ignore_errors=True)
 
     print()
     print("ИТОГ: прогонов %d | потеряно подтверждённых %d | разрывов всего %d (макс %d) | "
@@ -658,77 +668,80 @@ def cmd_run_journal_txn(runs: int, nonatomic: bool = False) -> int:
 
     for n in range(1, runs + 1):
         tmp = tempfile.mkdtemp(prefix="purr-jtxn-")
-        kv_path = os.path.join(tmp, "purr.db")
-        ev_path = os.path.join(tmp, "events.db")
-        marker = os.path.join(tmp, "flush.marker")
-
-        child = subprocess.Popen(
-            [python, SELF, child_mode, kv_path, ev_path, marker],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-        )
-
-        started = False
         try:
-            for line in child.stdout:
-                if line.startswith("BATCH_START"):
-                    started = True
-                    break
+            kv_path = os.path.join(tmp, "purr.db")
+            ev_path = os.path.join(tmp, "events.db")
+            marker = os.path.join(tmp, "flush.marker")
+
+            child = subprocess.Popen(
+                [python, SELF, child_mode, kv_path, ev_path, marker],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            )
+
+            started = False
+            try:
+                for line in child.stdout:
+                    if line.startswith("BATCH_START"):
+                        started = True
+                        break
+            finally:
+                pass
+
+            waited = 0.0
+            while started and not os.path.exists(marker) and waited < 10.0:
+                time.sleep(0.05)
+                waited += 0.05
+            time.sleep(0.2)  # дать окну после коммита открыться (сбросу — начаться)
+            alive_before_kill = child.poll() is None
+            child.kill()
+            child.wait()
+
+            try:
+                with open(marker, encoding="utf-8") as f:
+                    world = f.read().strip()
+            except OSError:
+                world = ""
+
+            verify = subprocess.run(
+                [python, SELF, "verify-journal-txn", kv_path, ev_path],
+                capture_output=True, text=True, env=env,
+            )
+            try:
+                data = json.loads(verify.stdout.strip().splitlines()[-1])
+            except Exception:
+                data = {"tx_in_kv": -1, "tx_in_journal": -1, "gap": -1,
+                        "integrity": "VERIFY_FAILED", "journal_integrity": "?",
+                        "stderr": verify.stderr[-300:]}
+
+            # Нулевой случай. Проверка пустой пары файлов даёт exit=0 (0 ключей,
+            # 0 событий, разрыв 0), поэтому «зелёное» само по себе ещё ничего не
+            # значит: ровно так выглядит и процесс, убитый до коммита пачки, и
+            # процесс, завершившийся до убийства. Окно дефекта открывается коммитом
+            # пачки — значит прогон состоялся, только если пачка в KV есть целиком
+            # и процесс был жив в момент убийства. Маркер здесь не годится: в
+            # двухфайловом режиме его ставит первый append журнала, а это событие
+            # первого pre-ключа, задолго до коммита пачки.
+            exercised = data["tx_in_kv"] == 500 and alive_before_kill
+            if verify.returncode != 0 or not exercised:
+                bad += 1
+
+            print("run %d: маркер сброса=%s | tx в KV %d/500 | событий tx %d | разрыв %d | "
+                  "integrity %s / журнал %s" % (
+                      n, "да" if os.path.exists(marker) else "НЕТ",
+                      data["tx_in_kv"], data["tx_in_journal"], data["gap"],
+                      data["integrity"], data["journal_integrity"]))
+            if not exercised:
+                reason = ("пачка не закоммичена, убийство до коммита — окно не открылось"
+                          if data["tx_in_kv"] != 500
+                          else "процесс завершился до убийства — авария не разыграна")
+                print("        ПРОГОН НЕ СОСТОЯЛСЯ: %s, вердикт не выносится" % reason)
+            if world == "kv-committed" and not nonatomic:
+                print("        конфигурация: журнал в файле данных (co-located), "
+                      "двухфайловый режим отвергнут продуктом")
+            if data.get("stderr"):
+                print("        stderr: %s" % data["stderr"].replace("\n", " ")[:250])
         finally:
-            pass
-
-        waited = 0.0
-        while started and not os.path.exists(marker) and waited < 10.0:
-            time.sleep(0.05)
-            waited += 0.05
-        time.sleep(0.2)  # дать окну после коммита открыться (сбросу — начаться)
-        alive_before_kill = child.poll() is None
-        child.kill()
-        child.wait()
-
-        try:
-            with open(marker, encoding="utf-8") as f:
-                world = f.read().strip()
-        except OSError:
-            world = ""
-
-        verify = subprocess.run(
-            [python, SELF, "verify-journal-txn", kv_path, ev_path],
-            capture_output=True, text=True, env=env,
-        )
-        try:
-            data = json.loads(verify.stdout.strip().splitlines()[-1])
-        except Exception:
-            data = {"tx_in_kv": -1, "tx_in_journal": -1, "gap": -1,
-                    "integrity": "VERIFY_FAILED", "journal_integrity": "?",
-                    "stderr": verify.stderr[-300:]}
-
-        # Нулевой случай. Проверка пустой пары файлов даёт exit=0 (0 ключей,
-        # 0 событий, разрыв 0), поэтому «зелёное» само по себе ещё ничего не
-        # значит: ровно так выглядит и процесс, убитый до коммита пачки, и
-        # процесс, завершившийся до убийства. Окно дефекта открывается коммитом
-        # пачки — значит прогон состоялся, только если пачка в KV есть целиком
-        # и процесс был жив в момент убийства. Маркер здесь не годится: в
-        # двухфайловом режиме его ставит первый append журнала, а это событие
-        # первого pre-ключа, задолго до коммита пачки.
-        exercised = data["tx_in_kv"] == 500 and alive_before_kill
-        if verify.returncode != 0 or not exercised:
-            bad += 1
-
-        print("run %d: маркер сброса=%s | tx в KV %d/500 | событий tx %d | разрыв %d | "
-              "integrity %s / журнал %s" % (
-                  n, "да" if os.path.exists(marker) else "НЕТ",
-                  data["tx_in_kv"], data["tx_in_journal"], data["gap"],
-                  data["integrity"], data["journal_integrity"]))
-        if not exercised:
-            reason = ("пачка не закоммичена, убийство до коммита — окно не открылось"
-                      if data["tx_in_kv"] != 500
-                      else "процесс завершился до убийства — авария не разыграна")
-            print("        ПРОГОН НЕ СОСТОЯЛСЯ: %s, вердикт не выносится" % reason)
-        if world == "kv-committed" and not nonatomic:
-            print("        конфигурация: журнал в файле данных (co-located), "
-                  "двухфайловый режим отвергнут продуктом")
-        if data.get("stderr"):
-            print("        stderr: %s" % data["stderr"].replace("\n", " ")[:250])
+            shutil.rmtree(tmp, ignore_errors=True)
 
     return 1 if bad else 0
 
