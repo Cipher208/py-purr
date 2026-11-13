@@ -3,14 +3,20 @@
 Режимы (14):
 
   Одиночные записи:
-    python crash_harness.py write  <db>          — дочерний процесс: пишет ключи, подтверждает каждый
-    python crash_harness.py verify <db> <keys>   — дочерний процесс: проверяет, что подтверждённое выжило
-    python crash_harness.py run    [runs]        — оркестратор: запускает сценарий N раз и печатает итог
+    python crash_harness.py write  <db>          — дочерний процесс: пишет ключи,
+                                                   подтверждает каждый
+    python crash_harness.py verify <db> <keys>   — дочерний процесс: проверяет,
+                                                   что подтверждённое выжило
+    python crash_harness.py run    [runs]        — оркестратор: запускает сценарий N
+                                                   раз и печатает итог
 
   Транзакция:
-    write-txn  <db>        — дочерний процесс: 20 одиночных ключей, затем пачка из 500 записей одной транзакцией
-    verify-txn <db> <keys> — дочерний процесс: пачка легла вся или не легла вовсе; частичный коммит — провал
-    run-txn    [runs]      — оркестратор: убивает процесс внутри транзакции и требует, чтобы пачки не было целиком
+    write-txn  <db>        — дочерний процесс: 20 одиночных ключей,
+                             затем пачка из 500 записей одной транзакцией
+    verify-txn <db> <keys> — дочерний процесс: пачка легла вся или не легла вовсе;
+                             частичный коммит — провал
+    run-txn    [runs]      — оркестратор: убивает процесс внутри транзакции и требует,
+                             чтобы пачки не было целиком
 
   С журналом:
     write-journal  <kv> <ev> [slow] — одиночные записи, журнал в файле данных
@@ -19,13 +25,17 @@
 
   Транзакция с журналом (run-journal-txn — приёмочный, остальные держат его честным):
     write-journal-txn  <kv> <ev> <marker> — пачка в транзакции, события пишутся в той же транзакции
-    verify-journal-txn <kv> <ev>          — сверяет пачку в KV с событиями журнала: gap и целостность
+    verify-journal-txn <kv> <ev>          — сверяет пачку в KV с событиями журнала:
+                                            gap и целостность
     run-journal-txn    [runs]             — пачка в транзакции, убийство в окне сразу после коммита
 
   Контрольный неатомарный:
-    write-journal-txn-nonatomic <kv> <ev> <marker> — модель НЕатомарного журнала: события после коммита пачки
-    run-journal-txn-nonatomic   [runs]             — то же, но журнал моделируется НЕатомарным (порядок до правки);
-                                                     обязан краснеть всегда, в том числе после правки продукта
+    write-journal-txn-nonatomic <kv> <ev> <marker> — модель НЕатомарного журнала:
+                                                     события после коммита пачки
+    run-journal-txn-nonatomic   [runs]             — то же, но журнал моделируется НЕатомарным
+                                                     (порядок до правки);
+                                                     обязан краснеть всегда, в том числе
+                                                     после правки продукта
 
 Правило доказательства: ключ считается подтверждённым только после того, как set() вернул True
 И после этого строка ушла в stdout с flush. Значит «подтверждено» никогда не опережает коммит.
@@ -256,9 +266,10 @@ def cmd_run_txn(runs: int) -> int:
         if flag == "БРАК":
             bad += 1
         where = ("внутри транзакции на %d" % inside_at) if inside_at else "НЕ попали внутрь"
-        print("run %d: %s  убит %s  pre потеряно=%s  tx записано=%d/500  частичный=%s  integrity=%s" % (
-            n, flag, where, data["pre_missing"], data["tx_present"],
-            data["partial_commit"], data["integrity"]))
+        print("run %d: %s  убит %s  pre потеряно=%s  tx записано=%d/500  "
+              "частичный=%s  integrity=%s" % (
+                  n, flag, where, data["pre_missing"], data["tx_present"],
+                  data["partial_commit"], data["integrity"]))
         if data.get("stderr"):
             print("        stderr: %s" % data["stderr"].replace("\n", " ")[:250])
 
@@ -403,7 +414,8 @@ def cmd_run_journal(runs: int, slow: bool = False) -> int:
 
         print("run %d: подтверждено %d | в KV %d | событий %d | разрыв %d | фантом %d | "
               "integrity %s / журнал %s" % (
-                  n, data.get("confirmed", 0), data.get("kv_keys", 0), data.get("journal_events", 0),
+                  n, data.get("confirmed", 0), data.get("kv_keys", 0),
+                  data.get("journal_events", 0),
                   data.get("gap", 0), data.get("phantom", 0),
                   data.get("integrity", "?"), data.get("journal_integrity", "?")))
         if not exercised:
@@ -415,8 +427,9 @@ def cmd_run_journal(runs: int, slow: bool = False) -> int:
             print("        stderr: %s" % data["stderr"].replace("\n", " ")[:250])
 
     print()
-    print("ИТОГ: прогонов %d | потеряно подтверждённых %d | разрывов всего %d (макс %d) | фантомов %d" % (
-        runs, losses, sum(gaps), max(gaps) if gaps else 0, phantoms))
+    print("ИТОГ: прогонов %d | потеряно подтверждённых %d | разрывов всего %d (макс %d) | "
+          "фантомов %d" % (
+              runs, losses, sum(gaps), max(gaps) if gaps else 0, phantoms))
     return 1 if bad else 0
 
 
@@ -604,7 +617,9 @@ def cmd_verify_journal_txn(kv_path: str, ev_path: str) -> None:
     conn = sqlite3.connect(kv_path)
     try:
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        tx_kv = {row[0] for row in conn.execute("SELECT key FROM kv WHERE key LIKE 'tx%'").fetchall()}
+        tx_kv = {
+            row[0] for row in conn.execute("SELECT key FROM kv WHERE key LIKE 'tx%'").fetchall()
+        }
     finally:
         conn.close()
 
